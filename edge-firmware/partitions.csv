@@ -1,0 +1,36 @@
+# Partition table — Unified Golden Path ESP32 (4 MB flash)
+#
+# A/B layout (OTA) for safe over-the-air updates:
+#   - ota_0 : current active partition (slot A)
+#   - ota_1 : OTA destination partition (slot B)
+#
+# The OTA process writes new firmware to the inactive slot and validates its
+# integrity with SHA-256 (esp_ota_end); only then updates otadata to point
+# to the new slot.
+#
+# SIGNATURE: firmware signature verification is currently performed in the
+# cloud with AWS Signer before distribution. ON-DEVICE signature verification
+# (Secure Boot v2 / CONFIG_SECURE_SIGNED_APP_*) is a Block 3 deliverable.
+#
+# ROLLBACK: automatic A/B rollback (esp_ota_mark_app_valid_cancel_rollback +
+# health-check) is activated in Block 3; that is why
+# CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE is commented out in sdkconfig.defaults.
+# There is currently no automatic rollback to the previous slot on boot failure.
+#
+# 4 MB (0x400000) layout:
+#   nvs       : 0x009000 →  24 KB  (configuration, TLS certificates in Block 2)
+#   otadata   : 0x00F000 →   8 KB  (A/B metadata: which slot to boot)
+#   phy_init  : 0x011000 →   4 KB  (ESP32 RF calibration)
+#   ota_0     : 0x020000 → 1.625 MiB (slot A — active firmware)
+#   ota_1     : 0x1C0000 → 1.625 MiB (slot B — OTA destination)
+#
+# Total used: ~3.375 MiB of 4 MiB. The remainder is unallocated.
+#
+# Format: Name, Type, SubType, Offset, Size, Flags
+
+# Name,     Type, SubType,  Offset,   Size,   Flags
+nvs,        data, nvs,      0x9000,   0x6000,
+otadata,    data, ota,      0xF000,   0x2000,
+phy_init,   data, phy,      0x11000,  0x1000,
+ota_0,      app,  ota_0,    0x20000,  0x1A0000,
+ota_1,      app,  ota_1,    0x1C0000, 0x1A0000,

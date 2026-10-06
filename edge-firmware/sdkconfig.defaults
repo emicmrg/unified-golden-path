@@ -1,0 +1,44 @@
+# sdkconfig.defaults — Unified Golden Path ESP32
+#
+# Applied by 'idf.py set-target esp32' + 'idf.py build'.
+# Values here are defaults: they can be overridden with 'idf.py menuconfig'.
+# Do NOT modify CONFIG_IDF_TARGET — it is set via 'idf.py set-target esp32'.
+
+# ── Target ──────────────────────────────────────────────────────────────────
+CONFIG_IDF_TARGET="esp32"
+
+# ── Flash ────────────────────────────────────────────────────────────────────
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+
+# ── Custom partition table ───────────────────────────────────────────────────
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_OFFSET=0x8000
+
+# ── Bootloader / OTA ─────────────────────────────────────────────────────────
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+# TODO Block 3: enable together with esp_ota_mark_app_valid_cancel_rollback()
+# after health check (temperature, MQTT connectivity) is implemented in app_main.c.
+# Enabling without mark_valid causes the first OTA to always roll back on boot.
+# CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# ── Log level ────────────────────────────────────────────────────────────────
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+
+# ── FreeRTOS ─────────────────────────────────────────────────────────────────
+CONFIG_FREERTOS_HZ=100
+CONFIG_FREERTOS_USE_TRACE_FACILITY=n
+
+# ── Minimum stack size for app_main ──────────────────────────────────────────
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+
+# ── WiFi (required for MQTT in Block 2) ──────────────────────────────────────
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+
+# ── Disable unused components ─────────────────────────────────────────────────
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y

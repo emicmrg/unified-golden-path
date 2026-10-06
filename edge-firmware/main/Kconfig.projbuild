@@ -1,0 +1,42 @@
+menu "UGP Edge Firmware"
+
+    choice UGP_ENV_SOURCE
+        prompt "Ambient data source"
+        default UGP_SOURCE_SIMULATED
+        help
+            Select the EnvironmentSource implementation to compile
+            into the firmware.
+
+            SIMULATED - Synthetic cold-chain data (~4°C / ~45%RH).
+                        No hardware required. Useful for development and CI.
+
+            DHT11     - ARD-360 sensor (assumed DHT11; confirm marking).
+                        STUB in Block 1 — real implementation in Block 3.
+
+        config UGP_SOURCE_SIMULATED
+            bool "Simulated (synthetic data, no hardware)"
+
+        config UGP_SOURCE_DHT11
+            bool "DHT11 / ARD-360 (physical sensor GPIO)"
+
+    endchoice
+
+    config UGP_DHT11_GPIO
+        int "GPIO pin number for DHT11 DATA pin (ARD-360)"
+        depends on UGP_SOURCE_DHT11
+        default 4
+        range 0 33
+        help
+            GPIO number on the ESP32 connected to the DHT11 sensor DATA pin.
+            GPIO4 is the recommended default (not ADC-only).
+            Verify against the hardware schematic before flashing.
+
+            Range restrictions (0–33):
+              - GPIOs 6–11 are reserved for the internal SPI flash:
+                using them can permanently brick the device.
+              - GPIOs 34–39 are input-only on the ESP32: DHT11 requires
+                a bidirectional pin (output during the start pull-down).
+            dht11_init() will reject GPIOs 6–11 with ESP_ERR_INVALID_ARG
+            as a second line of defence even if the range is widened here.
+
+endmenu
