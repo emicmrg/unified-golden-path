@@ -23,6 +23,8 @@ unified-golden-path/
 ├── self-healing-crew/      AI-based self-healing agent (Python / LangGraph)
 ├── sample-service/         Sample serverless service (Node.js / TypeScript)
 ├── web-dashboard/          Web dashboard (React / TypeScript)
+├── docs/
+│   └── DEPLOYMENT.md       End-to-end deployment runbook (bootstrap → stacks → GitHub → teardown)
 ├── .github/
 │   └── workflows/          CI/CD with GitHub Actions
 └── .kiro/                  Kiro agent harness (orchestrator + subagents)
@@ -72,6 +74,17 @@ pnpm synth -c ugp:allowPlaceholderRepo=true \
 pnpm diff -c ugp:allowPlaceholderRepo=true \
   -c ugp:dashboardAllowedOrigins=https://main.<appId>.amplifyapp.com
 ```
+
+## Deployment
+
+The end-to-end runbook for deploying to AWS lives in
+**[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**: prerequisites, `cdk bootstrap`, the per-stack
+context required by the fail-closed guards, the deploy order
+(`UgpIotStack` → `SelfHealingStack` → push the crew image → `DashboardStack` two-phase →
+Amplify web deploy → firmware flash), the GitHub repository variables mapped to CDK outputs,
+the **required** branch protection on `main`, teardown, and the security debt still open.
+
+---
 
 ## Edge firmware
 
