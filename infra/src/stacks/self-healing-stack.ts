@@ -19,6 +19,8 @@ const DEFAULTS = {
   logGroupName: "/aws/ecs/ugp-self-healing-crew",
   circuitBreakerTableName: "ugp-self-healing-circuit-breaker",
   ciRoleName: "ugp-ci-deploy-role",
+  /** Role assumed by Runner 1 (`self-heal-gha.yml`), which runs the crew inside Actions. */
+  bedrockCiRoleName: "ugp-bedrock-ci-role",
   /** Cross-region inference profile (`us.` prefix). Claude Sonnet 4.5 has NO on-demand. */
   bedrockInferenceProfileId: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
   /**
@@ -32,6 +34,11 @@ const DEFAULTS = {
   /** Obvious placeholders: the git repo does not exist yet. */
   placeholderOrg: "CHANGE-ME-ORG",
   placeholderRepo: "CHANGE-ME-REPO",
+  /**
+   * Context key that opts IN to synthesizing with the placeholder org/repo.
+   * Without it the stack fails closed (see the guard in the constructor).
+   */
+  allowPlaceholderRepoContextKey: "ugp:allowPlaceholderRepo",
   /** Branch the OIDC `sub` of the CI role is scoped to (not crew config). */
   ciBranch: "main",
   /** Circuit breaker attempt cap. Must fit the 1..10 range of config.py. */
@@ -92,6 +99,14 @@ export interface SelfHealingStackProps extends cdk.StackProps {
  *    and two DynamoDB actions (GetItem/UpdateItem). Nothing else.
  *  - `ugp-ci-deploy-role`: assumed by GitHub Actions via OIDC. It can launch THIS task and read
  *    ITS logs; it cannot read the secret, nor invoke Bedrock, nor touch the table.
+ *  - `ugp-bedrock-ci-role`: assumed by GitHub Actions via OIDC by **Runner 1**
+ *    (`self-heal-gha.yml`), which runs the crew *inside* the Actions runner instead of
+ *    dispatching it to Fargate. It gets exactly what the crew code needs there — Bedrock and
+ *    the circuit breaker table — and NOTHING of the ECS surface. See section 7b.
+ *
+ * The two OIDC roles are mutually exclusive at runtime (`vars.SELF_HEAL_MODE` selects one
+ * runner), but both are declared so switching modes is a repository-variable change, not a
+ * deploy.
  *
  * Nothing hardcoded about `account`/`region`: every ARN is built with `cdk.Arn.format` over
  * `this.account` / `this.region` / `this.partition`.
@@ -118,6 +133,9 @@ export class SelfHealingStack extends cdk.Stack {
   /** Role GitHub Actions assumes via OIDC. */
   public readonly ciDeployRole: iam.Role;
 
+  /** Role Runner 1 (`self-heal-gha.yml`) assumes via OIDC: Bedrock + circuit breaker only. */
+  public readonly bedrockCiRole: iam.Role;
+
   constructor(scope: Construct, id: string, props: SelfHealingStackProps = {}) {
     super(scope, id, props);
 
@@ -125,6 +143,30 @@ export class SelfHealingStack extends cdk.Stack {
     const githubRepo = props.githubRepo ?? DEFAULTS.placeholderRepo;
     const usingPlaceholders =
       githubOrg === DEFAULTS.placeholderOrg || githubRepo === DEFAULTS.placeholderRepo;
+
+    // FAIL-CLOSED on the OIDC trust policy.
+    // With the placeholders, BOTH OIDC roles (`ugp-ci-deploy-role`, `ugp-bedrock-ci-role`) trust
+    // `repo:CHANGE-ME-ORG/CHANGE-ME-REPO:ref:refs/heads/main`. That is not merely useless: the
+    // org/repo does not exist, so ANYONE who registers that name on GitHub can mint a token with
+    // that exact `sub` and assume both roles. An advisory warning is not enough for a template
+    // that can be deployed, so synth fails unless the placeholders are opted into EXPLICITLY
+    // (local synth / talk demo), in which case only the warning below is emitted.
+    const allowPlaceholderRepoContext = this.node.tryGetContext(
+      DEFAULTS.allowPlaceholderRepoContextKey,
+    );
+    const allowPlaceholderRepo =
+      allowPlaceholderRepoContext === true || allowPlaceholderRepoContext === "true";
+    if (usingPlaceholders && !allowPlaceholderRepo) {
+      throw new Error(
+        `${id}: githubOrg/githubRepo are missing or still placeholders ` +
+          `('${githubOrg}/${githubRepo}'), so the trust policy of both OIDC roles ` +
+          `(${DEFAULTS.ciRoleName}, ${DEFAULTS.bedrockCiRoleName}) would trust a repository ` +
+          "that anyone could register on GitHub and then assume the roles. " +
+          "Pass the real values: -c ugp:githubOrg=<org> -c ugp:githubRepo=<repo>. " +
+          `For a local synth/demo opt in explicitly: -c ${DEFAULTS.allowPlaceholderRepoContextKey}=true ` +
+          "(NEVER deploy a template synthesized that way).",
+      );
+    }
 
     const profileId = props.bedrockInferenceProfileId ?? DEFAULTS.bedrockInferenceProfileId;
     const routedRegions = props.bedrockRoutedRegions ?? DEFAULTS.bedrockRoutedRegions;
@@ -297,11 +339,22 @@ export class SelfHealingStack extends cdk.Stack {
       ),
     );
 
+    // SINGLE SOURCE OF TRUTH for the Bedrock resources: both the crew task role (Fargate,
+    // Runner 2) and `ugp-bedrock-ci-role` (Actions, Runner 1) point at this same array, so the
+    // two execution modes can never authorize different models.
+    const bedrockModelArns: readonly string[] = [inferenceProfileArn, ...foundationModelArns];
+
+    /** Actions the crew needs on Bedrock: invoke, buffered or streamed. Nothing else. */
+    const bedrockInvokeActions = [
+      "bedrock:InvokeModel",
+      "bedrock:InvokeModelWithResponseStream",
+    ] as const;
+
     taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "InvokeClaudeSonnetViaInferenceProfile",
-        actions: ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
-        resources: [inferenceProfileArn, ...foundationModelArns],
+        actions: [...bedrockInvokeActions],
+        resources: [...bedrockModelArns],
       }),
     );
 
@@ -443,6 +496,61 @@ export class SelfHealingStack extends cdk.Stack {
       }),
     );
 
+    // ── 7b. Bedrock CI role (OIDC) — Runner 1 runs the crew inside Actions ──
+    //
+    // `.github/workflows/self-heal-gha.yml` assumes THIS role (repository variable
+    // `BEDROCK_CI_ROLE_ARN`) and then runs `ugp-selfheal` on the GitHub-hosted runner. So the
+    // role is not a "deploy" role: it carries the permissions of the crew CODE, and only the
+    // subset of them that mode needs.
+    //
+    // Trust is pinned to the BRANCH scope on purpose and does NOT follow `props.ciSubjectScope`:
+    // the workflow triggers on `workflow_run`, an event GitHub always evaluates on the default
+    // branch, so the token `sub` is exactly `repo:<org>/<repo>:ref:refs/heads/main`. Widening it
+    // to `StringLike repo:<org>/<repo>:*` would let a pull-request workflow — whose content any
+    // fork contributor can propose — obtain Bedrock credentials. There is no reason to pay that.
+    const bedrockOidc = new GithubOidcRole(this, "BedrockCiRole", {
+      githubOrg,
+      githubRepo,
+      branch: DEFAULTS.ciBranch,
+      subjectScope: GithubOidcSubjectScope.BRANCH,
+      roleName: DEFAULTS.bedrockCiRoleName,
+      description:
+        "GitHub Actions (OIDC) Runner 1: runs the self-healing crew inside the Actions runner. " +
+        "Bedrock (1 model) + circuit breaker table only. No secret, no ECS, no logs.",
+    });
+    this.bedrockCiRole = bedrockOidc.role;
+
+    // Same model surface as the task role: the shared `bedrockModelArns` array guarantees the
+    // Actions runner and the Fargate task cannot diverge. The Sid is suffixed so the two
+    // documents stay distinguishable in the console and in the tests.
+    this.bedrockCiRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "InvokeClaudeSonnetFromActionsRunner",
+        actions: [...bedrockInvokeActions],
+        resources: [...bedrockModelArns],
+      }),
+    );
+
+    // Same two DynamoDB actions as the task role: `circuit_breaker.py` only calls `update_item`
+    // (atomic increment / `mark_escalated`) and `get_item`. No PutItem (it would clobber the
+    // counter), no Scan, no index, no table wildcard.
+    this.bedrockCiRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "CircuitBreakerStateFromActionsRunner",
+        actions: ["dynamodb:GetItem", "dynamodb:UpdateItem"],
+        resources: [this.circuitBreakerTable.tableArn],
+      }),
+    );
+
+    // DELIBERATELY ABSENT — `secretsmanager:GetSecretValue`.
+    // This is the key difference against the Fargate task role. Runner 1 sets
+    // `UGP_ALLOW_ENV_TOKEN=true` and hands the crew the workflow's native `GITHUB_TOKEN`
+    // (`contents:write` + `pull-requests:write`, scoped to this repo and expiring with the job),
+    // so it never signs a GitHub App JWT and never reads the PEM. Granting the secret here would
+    // hand an Actions runner a credential good for the whole App installation — strictly more
+    // power than the job needs. Nothing else is granted either: no `ecs:*` (Runner 1 launches no
+    // task) and no `logs:*` (it reads the CI log through the GitHub API, not CloudWatch).
+
     // ── 8. Outputs ──────────────────────────────────────────────────────────
     new cdk.CfnOutput(this, "CrewEcrRepositoryUri", {
       value: this.repository.repositoryUri,
@@ -493,6 +601,19 @@ export class SelfHealingStack extends cdk.Stack {
       description: "`sub` claim required in the CI role trust policy",
     });
 
+    new cdk.CfnOutput(this, "BedrockCiRoleArn", {
+      value: this.bedrockCiRole.roleArn,
+      description:
+        "Runner 1 role (Bedrock + circuit breaker). Set it as the repository variable " +
+        "BEDROCK_CI_ROLE_ARN consumed by .github/workflows/self-heal-gha.yml " +
+        "(role-to-assume of aws-actions/configure-aws-credentials)",
+    });
+
+    new cdk.CfnOutput(this, "BedrockCiRoleTrustedSubject", {
+      value: bedrockOidc.subjectClaim,
+      description: "`sub` claim required in the Runner 1 role trust policy",
+    });
+
     new cdk.CfnOutput(this, "CrewLogGroupName", {
       value: this.logGroup.logGroupName,
       description: "Dedicated crew log group (1 week retention)",
@@ -514,11 +635,16 @@ export class SelfHealingStack extends cdk.Stack {
     });
 
     // ── 9. Synth warnings ───────────────────────────────────────────────────
+    // Reached only on the explicit opt-in path (`-c ugp:allowPlaceholderRepo=true`); without it
+    // the fail-closed guard at the top of the constructor already aborted the synth.
     if (usingPlaceholders) {
       cdk.Annotations.of(this).addWarningV2(
         "ugp:self-healing:github-placeholders",
-        "githubOrg/githubRepo are still placeholders: the CI role trust policy points at " +
-          `'repo:${githubOrg}/${githubRepo}:...' and NO workflow will be able to assume it. ` +
+        "githubOrg/githubRepo are still placeholders: the trust policy of both OIDC roles " +
+          `(${DEFAULTS.ciRoleName}, ${DEFAULTS.bedrockCiRoleName}) points at ` +
+          `'repo:${githubOrg}/${githubRepo}:...'. This template is for LOCAL SYNTH ONLY ` +
+          `(${DEFAULTS.allowPlaceholderRepoContextKey}=true): do NOT deploy it, anyone who ` +
+          "registers that org/repo on GitHub could assume both roles. " +
           "Before deploying for real: cdk deploy SelfHealingStack " +
           "-c ugp:githubOrg=<org> -c ugp:githubRepo=<repo>",
       );

@@ -104,7 +104,12 @@ jobs:
       # ── AWS credentials for Bedrock and DynamoDB ───────────────────────────
       # OIDC is used (no static keys). The bedrock-ci-role must have:
       #   - bedrock:InvokeModel on the model configured in BEDROCK_MODEL_ID
-      #   - dynamodb:GetItem, PutItem on the DDB_TABLE_NAME table
+      #   - dynamodb:GetItem, UpdateItem on the DDB_TABLE_NAME table
+      #     (circuit_breaker.py uses get_item + update_item; never put_item,
+      #      which would overwrite the attempt counter)
+      #
+      # Defined in infra/src/stacks/self-healing-stack.ts as 'ugp-bedrock-ci-role'
+      # (output BedrockCiRoleArn of SelfHealingStack).
       #
       # secretsmanager:GetSecretValue is NOT needed in Actions mode:
       # the GitHub token is the native GITHUB_TOKEN of the workflow (see below).

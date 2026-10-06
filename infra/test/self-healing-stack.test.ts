@@ -424,6 +424,174 @@ describe("SelfHealingStack — crew runner", () => {
     });
   });
 
+  describe("OIDC — ugp-bedrock-ci-role (Runner 1, crew inside Actions)", () => {
+    /** The AWS::IAM::Role of the Runner 1 role. */
+    function bedrockCiRole(t: Template = template): any {
+      const role = Object.values(t.findResources("AWS::IAM::Role")).find(
+        (r: any) => r.Properties?.RoleName === "ugp-bedrock-ci-role",
+      ) as any;
+      expect(role).toBeDefined();
+      return role;
+    }
+
+    /** The single inline policy document attached to the Runner 1 role. */
+    function bedrockCiPolicy(t: Template = template): any {
+      const policies = Object.values(t.findResources("AWS::IAM::Policy")).filter((p: any) =>
+        (p.Properties.PolicyDocument.Statement as any[]).some(
+          (s) => s.Sid === "InvokeClaudeSonnetFromActionsRunner",
+        ),
+      ) as any[];
+      expect(policies).toHaveLength(1);
+      return policies[0].Properties.PolicyDocument;
+    }
+
+    it("The role exists with a 1 hour max session duration", () => {
+      expect(bedrockCiRole().Properties.MaxSessionDuration).toBe(3600);
+    });
+
+    it("Trust policy: web identity against the IMPORTED provider, exact aud and sub", () => {
+      template.hasResourceProperties("AWS::IAM::Role", {
+        RoleName: "ugp-bedrock-ci-role",
+        AssumeRolePolicyDocument: {
+          Statement: [
+            Match.objectLike({
+              Action: "sts:AssumeRoleWithWebIdentity",
+              Effect: "Allow",
+              Condition: {
+                StringEquals: {
+                  "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+                  "token.actions.githubusercontent.com:sub":
+                    "repo:demo-org/demo-repo:ref:refs/heads/main",
+                },
+              },
+            }),
+          ],
+        },
+      });
+      // The Federated principal is the oidc-provider ARN built from the stack account,
+      // never a provider resource created by this stack.
+      const principal = flat(
+        bedrockCiRole().Properties.AssumeRolePolicyDocument.Statement[0].Principal,
+      );
+      expect(principal).toContain("oidc-provider/token.actions.githubusercontent.com");
+      template.resourceCountIs("AWS::IAM::OIDCProvider", 0);
+      template.resourceCountIs("Custom::AWSCDKOpenIdConnectProvider", 0);
+    });
+
+    it("REGRESSION: no StringLike and no org-wide subject in the trust policy", () => {
+      const doc = flat(bedrockCiRole().Properties.AssumeRolePolicyDocument);
+      expect(doc).not.toContain("StringLike");
+      expect(doc).not.toContain("repo:demo-org/*");
+      expect(doc).not.toContain("repo:demo-org/demo-repo:*");
+    });
+
+    it("REGRESSION: ciSubjectScope=REPOSITORY does NOT widen this role (only the deploy role)", () => {
+      // Runner 1 triggers on `workflow_run`, always evaluated on the default branch: the role
+      // must stay pinned to `ref:refs/heads/main` even when the deploy role is widened.
+      const t = synth({
+        githubOrg: "demo-org",
+        githubRepo: "demo-repo",
+        ciSubjectScope: GithubOidcSubjectScope.REPOSITORY,
+      });
+      const cond = bedrockCiRole(t).Properties.AssumeRolePolicyDocument.Statement[0].Condition;
+      expect(cond.StringLike).toBeUndefined();
+      expect(cond.StringEquals["token.actions.githubusercontent.com:sub"]).toBe(
+        "repo:demo-org/demo-repo:ref:refs/heads/main",
+      );
+    });
+
+    it("Bedrock: the same 4 ARNs as the task role and nothing else", () => {
+      const stmt = statementBySid(template, "InvokeClaudeSonnetFromActionsRunner");
+      expect(stmt.Effect).toBe("Allow");
+      expect(stmt.Action).toEqual(["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]);
+      expect(stmt.Resource).toHaveLength(4);
+
+      const resources = flat(stmt.Resource);
+      expect(resources).toContain(`:inference-profile/${PROFILE_ID}`);
+      ["us-east-1", "us-east-2", "us-west-2"].forEach((region) => {
+        expect(resources).toContain(`:bedrock:${region}::foundation-model/${MODEL_ID}`);
+      });
+    });
+
+    it("CONTRACT: the Bedrock resources CANNOT drift from the task role's", () => {
+      // Both statements are built from the same `bedrockModelArns` array. Asserting deep
+      // equality is what makes a future divergence fail here instead of in production.
+      expect(statementBySid(template, "InvokeClaudeSonnetFromActionsRunner").Resource).toEqual(
+        statementBySid(template, "InvokeClaudeSonnetViaInferenceProfile").Resource,
+      );
+
+      const otherProfile = "us.anthropic.claude-3-5-haiku-20241022-v1:0";
+      const t = synth({
+        githubOrg: "demo-org",
+        githubRepo: "demo-repo",
+        bedrockInferenceProfileId: otherProfile,
+      });
+      expect(statementBySid(t, "InvokeClaudeSonnetFromActionsRunner").Resource).toEqual(
+        statementBySid(t, "InvokeClaudeSonnetViaInferenceProfile").Resource,
+      );
+    });
+
+    it("REGRESSION: never bedrock:* nor a foundation-model/* wildcard", () => {
+      const stmt = statementBySid(template, "InvokeClaudeSonnetFromActionsRunner");
+      const body = flat(stmt);
+      expect(body).not.toContain("bedrock:*");
+      expect(body).not.toContain("foundation-model/*");
+      expect(body).not.toContain("inference-profile/*");
+      expect(stmt.Resource).not.toContain("*");
+    });
+
+    it("DynamoDB: only GetItem/UpdateItem on the circuit breaker table", () => {
+      const stmt = statementBySid(template, "CircuitBreakerStateFromActionsRunner");
+      expect(stmt.Action).toEqual(["dynamodb:GetItem", "dynamodb:UpdateItem"]);
+      expectArnOf(stmt.Resource, /CircuitBreakerTable/);
+    });
+
+    it("REGRESSION: no PutItem/Scan/Delete and no table wildcard", () => {
+      const body = flat(statementBySid(template, "CircuitBreakerStateFromActionsRunner"));
+      [
+        "dynamodb:PutItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Scan",
+        "dynamodb:Query",
+        "dynamodb:*",
+        "table/*",
+        "/index/",
+      ].forEach((needle) => expect(body).not.toContain(needle));
+    });
+
+    it("CRITICAL: NO secretsmanager (Runner 1 uses the native GITHUB_TOKEN)", () => {
+      // UGP_ALLOW_ENV_TOKEN=true in self-heal-gha.yml: the crew never signs the GitHub App JWT
+      // there, so it must not be able to read the PEM. This is THE difference vs the task role.
+      expect(flat(bedrockCiPolicy())).not.toContain("secretsmanager");
+    });
+
+    it("The policy grants exactly 2 statements: Bedrock and the circuit breaker", () => {
+      const sids = (bedrockCiPolicy().Statement as any[]).map((s) => s.Sid);
+      expect(sids).toEqual([
+        "InvokeClaudeSonnetFromActionsRunner",
+        "CircuitBreakerStateFromActionsRunner",
+      ]);
+    });
+
+    it("REGRESSION: no ecs/logs/iam:PassRole/ecr/sts surface", () => {
+      const body = flat(bedrockCiPolicy());
+      ["ecs:", "logs:", "iam:PassRole", "ecr:", "sts:AssumeRole", "s3:", "kms:"].forEach(
+        (needle) => expect(body).not.toContain(needle),
+      );
+    });
+
+    it("REGRESSION: no statement uses Resource '*'", () => {
+      (bedrockCiPolicy().Statement as any[]).forEach((s) => {
+        expect(s.Resource).not.toBe("*");
+        expect(flat(s.Resource)).not.toBe('["*"]');
+      });
+    });
+
+    it("Does not attach any managed policy (inline, auditable least-privilege)", () => {
+      expect(bedrockCiRole().Properties.ManagedPolicyArns).toBeUndefined();
+    });
+  });
+
   describe("Outputs and warnings", () => {
     it("Emits the runner wiring outputs", () => {
       [
@@ -436,6 +604,8 @@ describe("SelfHealingStack — crew runner", () => {
         "GithubAppSecretArn",
         "CiDeployRoleArn",
         "CiDeployRoleTrustedSubject",
+        "BedrockCiRoleArn",
+        "BedrockCiRoleTrustedSubject",
         "CrewLogGroupName",
         "CrewSubnetIds",
         "CrewSecurityGroupId",
@@ -443,9 +613,46 @@ describe("SelfHealingStack — crew runner", () => {
       ].forEach((key) => template.hasOutput(key, {}));
     });
 
-    it("Without githubOrg/githubRepo it warns that the trust policy is useless", () => {
-      const app = new cdk.App();
-      const stack = new SelfHealingStack(app, "PlaceholderStack", { env: TEST_ENV });
+    it("BedrockCiRoleArn documents the workflow variable it maps to", () => {
+      template.hasOutput("BedrockCiRoleArn", {
+        Description: Match.stringLikeRegexp("BEDROCK_CI_ROLE_ARN"),
+      });
+    });
+
+    it("FAIL-CLOSED: without githubOrg/githubRepo and without the opt-in, synth THROWS", () => {
+      // The placeholder trust policy would let whoever registers CHANGE-ME-ORG/CHANGE-ME-REPO
+      // on GitHub assume both OIDC roles: it must not be synthesizable by accident.
+      expect(() => {
+        const app = new cdk.App();
+        const stack = new SelfHealingStack(app, "PlaceholderStack", { env: TEST_ENV });
+        Template.fromStack(stack);
+      }).toThrow(/githubOrg|placeholder|allowPlaceholderRepo/);
+    });
+
+    it("ESCAPE HATCH: -c ugp:allowPlaceholderRepo=true synthesizes and warns instead", () => {
+      const app = new cdk.App({ context: { "ugp:allowPlaceholderRepo": "true" } });
+      const stack = new SelfHealingStack(app, "PlaceholderOptInStack", { env: TEST_ENV });
+
+      // It synthesizes (no throw) and both OIDC roles keep the placeholder subject.
+      const t = Template.fromStack(stack);
+      ["ugp-ci-deploy-role", "ugp-bedrock-ci-role"].forEach((roleName) => {
+        t.hasResourceProperties("AWS::IAM::Role", {
+          RoleName: roleName,
+          AssumeRolePolicyDocument: Match.objectLike({
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Condition: Match.objectLike({
+                  StringEquals: Match.objectLike({
+                    "token.actions.githubusercontent.com:sub":
+                      "repo:CHANGE-ME-ORG/CHANGE-ME-REPO:ref:refs/heads/main",
+                  }),
+                }),
+              }),
+            ]),
+          }),
+        });
+      });
+
       const warnings = Annotations.fromStack(stack).findWarning(
         "*",
         Match.stringLikeRegexp("placeholder"),
