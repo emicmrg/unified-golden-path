@@ -1,0 +1,153 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# self-heal-dispatch.yml
+# RUNNER 2 — Triggers the crew on Fargate on-demand via OIDC + ECS RunTask.
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  COMPARISON FOR THE TALK — RUNNER 2: ISOLATED / FAULT-TOLERANT         │
+# │                                                                         │
+# │  Advantages:                                                            │
+# │    ✓ The healer runs OUTSIDE the failed system (isolated Fargate).      │
+# │    ✓ If the Actions runner has a problem, Fargate is unaffected         │
+# │      — the healer is independent from what it repairs.                  │
+# │    ✓ The Fargate task role does NOT expose credentials to the Actions   │
+# │      runner.                                                            │
+# │    ✓ The Actions workflow only needs id-token + ecs:RunTask.            │
+# │    ✓ Scales better: long LLM execution does not consume Actions slots.  │
+# │                                                                         │
+# │  Disadvantages:                                                         │
+# │    ✗ Requires Fargate infrastructure running (SelfHealingStack CDK).    │
+# │    ✗ Higher startup latency (Fargate container cold start).             │
+# │    ✗ Logs in CloudWatch, not directly in GitHub Actions UI.             │
+# │    ✗ The push to the fix/* branch is done by the crew using a GitHub    │
+# │      App token (not the workflow's GITHUB_TOKEN).                       │
+# │                                                                         │
+# │  Contrasts with Runner 1 (self-heal-gha.yml):                          │
+# │    the healer runs inside the CI system itself.                         │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# FLOW:
+#   1. sample-service-ci fails → workflow_run completed (conclusion=failure)
+#   2. This workflow assumes ugp-ci-deploy-role via OIDC (no static keys)
+#   3. Launches aws ecs run-task with env overrides to pass the failure context
+#   4. The Fargate task runs ugp-selfheal, diagnoses, generates a patch and opens a PR
+#   5. The Actions workflow ends: does NOT wait for the Fargate task
+#
+# GUARDRAIL — NEVER PUSH DIRECTLY TO MAIN:
+#   The crew opens a PR on fix/* — merging to main requires branch protection
+#   and human approval (see debt B3-sec in the workflows README).
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: self-heal-dispatch
+
+on:
+  workflow_run:
+    workflows:
+      - "sample-service-ci"
+    types:
+      - completed
+
+# ─── Permissions ──────────────────────────────────────────────────────────────
+# id-token: write  — REQUIRED to assume ugp-ci-deploy-role via OIDC.
+#                    The role trust requires:
+#                      sub = repo:<org>/<repo>:ref:refs/heads/main (StringEquals)
+# contents: read   — Only needed for the runner's implicit checkout.
+#
+# contents:write and pull-requests:write are NOT needed here:
+# the crew pushes and opens the PR from inside the Fargate container
+# using its own GitHub App token (stored in Secrets Manager).
+# ─────────────────────────────────────────────────────────────────────────────
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  dispatch-fargate:
+    name: Dispatch crew to Fargate (OIDC + ECS RunTask)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Only run if:
+    #   1. The CI workflow finished with a failure.
+    #   2. The active mode is 'fargate' (not 'gha' — avoids double trigger).
+    #   3. The failure comes from the same repo (not a fork — security guardrail).
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      vars.SELF_HEAL_MODE == 'fargate' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+
+    steps:
+      # 1. Assume the CI role via OIDC
+      #    The ugp-ci-deploy-role (CiDeployRoleArn in SelfHealingStack outputs)
+      #    only allows:
+      #      - ecs:RunTask on the specific crew task definition
+      #      - ecs:DescribeTasks for monitoring
+      #      - iam:PassRole to the task roles (task role + execution role)
+      #      - logs:GetLogEvents to read crew logs
+      #    Trust policy: sub = repo:<org>/<repo>:ref:refs/heads/main (StringEquals)
+      - name: Assume ugp-ci-deploy-role via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # CiDeployRoleArn — output from SelfHealingStack CDK
+          # Set as a repository variable (not a secret, not sensitive)
+          role-to-assume: ${{ vars.CI_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      # 2. Launch the Fargate task with the failure context
+      #
+      # ─────────────────────────────────────────────────────────────────────
+      # TODO M1-sec (security debt from block 2):
+      #   The ugp-ci-deploy-role allows passing arbitrary --overrides in
+      #   RunTask. This means that whoever controls this workflow could
+      #   inject commands into the container. In production, this step should
+      #   be moved to a Lambda or EventBridge rule with FIXED overrides
+      #   (not parameterized from the workflow) to avoid exposing the task role.
+      #   For now, for the demo, the overrides only pass context environment
+      #   variables (run_id, repo) — no arbitrary commands.
+      #   Ref: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html#container_definition_environment
+      # ─────────────────────────────────────────────────────────────────────
+      - name: Launch crew on Fargate (ECS RunTask)
+        env:
+          # Failure context values — passed as container overrides
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW_RUN_REPO: ${{ github.repository }}
+          # Infrastructure vars — set from SelfHealingStack CDK outputs
+          # (see workflows README for configuration instructions)
+          CREW_CLUSTER: ${{ vars.CREW_CLUSTER_NAME }}
+          CREW_TASK_DEF: ${{ vars.CREW_TASK_DEF_ARN }}
+          CREW_SUBNETS: ${{ vars.CREW_SUBNET_IDS }}
+          CREW_SG: ${{ vars.CREW_SECURITY_GROUP_ID }}
+        run: |
+          # Build the overrides JSON to pass the context to the container.
+          # Only environment variables are overridden — not the command or entrypoint.
+          OVERRIDES=$(cat <<EOF
+          {
+            "containerOverrides": [
+              {
+                "name": "crew",
+                "environment": [
+                  { "name": "UGP_RUN_ID",    "value": "${WORKFLOW_RUN_ID}" },
+                  { "name": "UGP_RUN_KEY",   "value": "${WORKFLOW_RUN_ID}" },
+                  { "name": "GITHUB_REPO",   "value": "${WORKFLOW_RUN_REPO}" },
+                  { "name": "AWS_REGION",    "value": "us-east-1" }
+                ]
+              }
+            ]
+          }
+          EOF
+          )
+
+          # Launch the task — we do not wait for completion (fire-and-forget).
+          # The crew will run asynchronously; logs are available in CloudWatch.
+          aws ecs run-task \
+            --cluster "${CREW_CLUSTER}" \
+            --task-definition "${CREW_TASK_DEF}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={
+              subnets=[${CREW_SUBNETS}],
+              securityGroups=[${CREW_SG}],
+              assignPublicIp=ENABLED
+            }" \
+            --overrides "${OVERRIDES}" \
+            --region us-east-1 \
+            --query 'tasks[0].taskArn' \
+            --output text

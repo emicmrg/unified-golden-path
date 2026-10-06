@@ -1,0 +1,73 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# sample-service-ci.yml
+# Main CI pipeline for @ugp/sample-service.
+#
+# PURPOSE IN THE DEMO:
+#   This workflow is the "system that can fail". When Bug A is injected into
+#   src/coldChain.ts, the 'test' job fails with 2 red tests.
+#   That 'failure' conclusion triggers the self-healing workflows:
+#     - self-heal-gha.yml    (Runner 1: crew inside Actions)
+#     - self-heal-dispatch.yml (Runner 2: crew on Fargate via OIDC)
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: sample-service-ci
+
+on:
+  push:
+    branches:
+      - "**"
+    paths:
+      - "sample-service/**"
+  pull_request:
+    paths:
+      - "sample-service/**"
+  # Allows manual trigger for the demo without touching the code
+  workflow_dispatch:
+
+# Cancel previous runs for the same branch/PR to avoid queue build-up
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimum permissions: read-only access to source code. Nothing is written.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and Test (@ugp/sample-service)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # 1. Checkout the code at the branch/PR that triggered the workflow
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. Install pnpm before setup-node so the cache works correctly
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "9.15.4"
+
+      # 3. Set up Node.js 20 with pnpm cache
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      # 4. Install dependencies for the entire workspace
+      - name: Install dependencies (pnpm install)
+        run: pnpm install --frozen-lockfile
+
+      # 5. Compile TypeScript — fails here if there are type errors
+      - name: Build (tsc)
+        run: pnpm --dir sample-service run build
+
+      # 6. Run tests — FAILS here when Bug A is injected
+      #    Expected output with active bug:
+      #      ✗ validateTemperature > returns true for exact minimum temperature (2.0 °C)
+      #      ✗ classifyReading → OK > classifies OK for exact lower bound (2.0 °C, 30 %RH)
+      - name: Test (vitest run)
+        run: pnpm --dir sample-service run test

@@ -1,0 +1,169 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# self-heal-gha.yml
+# RUNNER 1 — Self-healing crew running INSIDE GitHub Actions.
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  COMPARISON FOR THE TALK — RUNNER 1: SIMPLE / COUPLED                  │
+# │                                                                         │
+# │  Advantages:                                                            │
+# │    ✓ No extra infrastructure (no Fargate required to be running).       │
+# │    ✓ Simpler setup: installs the crew as a Python package and runs it.  │
+# │    ✓ Centralized logs in GitHub Actions.                                │
+# │                                                                         │
+# │  Disadvantages:                                                         │
+# │    ✗ The healer runs on the same system that may be failing             │
+# │      (if the Actions runner has a problem, everything fails).           │
+# │    ✗ Requires AWS credentials (Bedrock + DynamoDB) in the runner.       │
+# │    ✗ Crew execution time counts against the 6h per-job limit            │
+# │      in GitHub Actions.                                                 │
+# │    ✗ Does not scale easily for repos that fail very often.              │
+# │                                                                         │
+# │  Contrasts with Runner 2 (self-heal-dispatch.yml):                     │
+# │    the healer is ISOLATED in Fargate, outside the repaired system.     │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# ACTIVE RUNNER SELECTION (SELF_HEAL_MODE):
+#   This repository variable determines WHICH runner is activated:
+#     vars.SELF_HEAL_MODE == 'gha'     → only this workflow runs.
+#     vars.SELF_HEAL_MODE == 'fargate' → only self-heal-dispatch.yml runs.
+#   Both are never triggered at the same time: no collision in the circuit
+#   breaker nor are 2 PRs created for the same failure. It is exactly the
+#   switch for the demo: changing one var ↔ changing runner.
+#
+# CIRCUIT BREAKER:
+#   The crew itself applies the circuit breaker via DynamoDB (table configured
+#   in the DDB_TABLE_NAME variable). If the number of attempts for the same
+#   run_key exceeds MAX_ATTEMPTS, the crew escalates to a human and exits with
+#   exit code 2. The workflow does NOT re-trigger in a loop because:
+#     1. workflow_run only fires when sample-service-ci completes.
+#     2. The crew opens a PR on fix/* — never pushes directly to main.
+#     3. The DynamoDB circuit breaker blocks retries for the same failure.
+#
+# GITHUB TOKEN (Runner 1 — Actions mode):
+#   The native GITHUB_TOKEN of the workflow is used (contents:write + pull-requests:write).
+#   GITHUB_APP_ID / INSTALLATION_ID / SECRET_ARN are NOT required — those vars
+#   are exclusive to Fargate mode (Runner 2). The crew detects the mode via
+#   UGP_ALLOW_ENV_TOKEN=true and uses the GITHUB_TOKEN from the environment
+#   directly, without attempting to obtain a GitHub App token from Secrets Manager.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: self-heal-gha
+
+on:
+  workflow_run:
+    workflows:
+      - "sample-service-ci"
+    types:
+      - completed
+
+# ─── Permissions ──────────────────────────────────────────────────────────────
+# contents: write      — the crew creates the fix/* branch and commits.
+# pull-requests: write — the crew opens the correction PR.
+# id-token: write      — to assume an AWS role via OIDC → Bedrock + DynamoDB.
+#
+# NEVER granted: admin, workflows, packages, deployments or secrets.
+# ─────────────────────────────────────────────────────────────────────────────
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+  actions: read
+
+# ─── Concurrency ──────────────────────────────────────────────────────────────
+# Only one active self-heal at a time. If a new failure arrives while one is
+# already running, the previous one is cancelled (the most recent run wins).
+# ─────────────────────────────────────────────────────────────────────────────
+concurrency:
+  group: self-heal-gha
+  cancel-in-progress: true
+
+jobs:
+  self-heal:
+    name: Self-healing (crew in Actions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Only run if:
+    #   1. The CI workflow finished with a failure.
+    #   2. The active mode is 'gha' (not 'fargate' — avoids double trigger).
+    #   3. The failure comes from the same repo (not a fork — security guardrail).
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      vars.SELF_HEAL_MODE == 'gha' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+
+    steps:
+      # 1. Checkout the repo (main branch — the crew will work on this).
+      #    fetch-depth:1 is sufficient for workflow_run: the crew creates
+      #    the fix/* branch by pushing a single commit on top of HEAD.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # ── AWS credentials for Bedrock and DynamoDB ───────────────────────────
+      # OIDC is used (no static keys). The bedrock-ci-role must have:
+      #   - bedrock:InvokeModel on the model configured in BEDROCK_MODEL_ID
+      #   - dynamodb:GetItem, PutItem on the DDB_TABLE_NAME table
+      #
+      # secretsmanager:GetSecretValue is NOT needed in Actions mode:
+      # the GitHub token is the native GITHUB_TOKEN of the workflow (see below).
+      #
+      # Set in the repository:
+      #   vars.BEDROCK_CI_ROLE_ARN = arn:aws:iam::363509146455:role/ugp-bedrock-ci-role
+      # ──────────────────────────────────────────────────────────────────────
+      - name: Configure AWS credentials (OIDC → Bedrock + DynamoDB)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.BEDROCK_CI_ROLE_ARN }}
+          aws-region: us-east-1
+
+      # 2. Set up Python 3.11
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 3. Install the crew package from the local directory.
+      #    This installs the 'ugp-selfheal' entrypoint into the runner's PATH.
+      - name: Install ugp-self-healing-crew
+        run: pip install --quiet ./self-healing-crew
+
+      # 4. Run the crew passing the ID of the failed run.
+      #    The crew:
+      #      a) Downloads the CI log of the failed run via GitHub API
+      #      b) Analyses the failure with the log-analyst agent (Bedrock)
+      #      c) Generates a patch with the fix-engineer agent
+      #      d) Validates the patch with the reviewer agent
+      #      e) If the reviewer approves: creates fix/* branch and opens PR
+      #      f) If rejected or circuit breaker active: escalates to human
+      - name: Run self-healing crew
+        env:
+          # Repository being repaired (format: org/repo)
+          GITHUB_REPO: ${{ github.repository }}
+          # ID of the failed run — primary key for the circuit breaker
+          UGP_RUN_ID: ${{ github.event.workflow_run.id }}
+          # run_key = run_id (commit SHA can also be used if preferred)
+          UGP_RUN_KEY: ${{ github.event.workflow_run.id }}
+          # Native workflow GitHub token (contents:write + pull-requests:write).
+          # In Actions mode a GitHub App is NOT used — UGP_ALLOW_ENV_TOKEN=true
+          # enables the fallback to this environment token directly.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UGP_ALLOW_ENV_TOKEN: "true"
+          # DynamoDB table for the circuit breaker.
+          # Source: CircuitBreakerTableName output from SelfHealingStack CDK.
+          # Set in repo vars: vars.DDB_TABLE_NAME
+          DDB_TABLE_NAME: ${{ vars.DDB_TABLE_NAME }}
+          # Bedrock model.
+          # Set in repo vars: vars.BEDROCK_MODEL_ID
+          # Default if the variable is not set:
+          BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID || 'bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0' }}
+          # Maximum repair attempts per run_key before escalating.
+          # Circuit breaker contract = 2 (consistent with SelfHealingStack).
+          MAX_ATTEMPTS: ${{ vars.MAX_ATTEMPTS || '2' }}
+          # AWS region
+          AWS_REGION: us-east-1
+        run: |
+          ugp-selfheal \
+            --run-id "$UGP_RUN_ID" \
+            --run-key "$UGP_RUN_KEY"
