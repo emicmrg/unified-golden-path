@@ -54,11 +54,23 @@ pnpm build
 # Run the tests (infra/ CDK assertions)
 pnpm test
 
-# Synthesize CDK infrastructure
-pnpm synth
+# Synthesize CDK infrastructure. Two stacks are fail-closed:
+#   - SelfHealingStack on the GitHub OIDC trust policy -> pass the real org/repo.
+#   - DashboardStack on the CORS origin of its public Function URL -> pass the Amplify domain
+#     (AmplifyDefaultDomain output; on the FIRST deploy it does not exist yet, see
+#     infra/README.md "Two-phase deploy").
+pnpm synth \
+  -c ugp:githubOrg=<org> -c ugp:githubRepo=<repo> \
+  -c ugp:dashboardAllowedOrigins=https://main.<appId>.amplifyapp.com
 
-# Show the CDK diff against the deployed stack
-pnpm diff
+# Local synth without a repository: opt into the placeholders explicitly (never deploy that
+# template). The CORS origin stays scoped: that one has no placeholder.
+pnpm synth -c ugp:allowPlaceholderRepo=true \
+  -c ugp:dashboardAllowedOrigins=https://main.<appId>.amplifyapp.com
+
+# Show the CDK diff against the deployed stack (same context requirements)
+pnpm diff -c ugp:allowPlaceholderRepo=true \
+  -c ugp:dashboardAllowedOrigins=https://main.<appId>.amplifyapp.com
 ```
 
 ## Edge firmware

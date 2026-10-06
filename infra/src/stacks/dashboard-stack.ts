@@ -12,6 +12,17 @@ import { DASHBOARD_STATUS_HANDLER } from "../lambda/dashboard-status-handler";
 /** CloudFormation hard limit for `AWS::Lambda::Function.Code.ZipFile`. */
 const INLINE_CODE_MAX_CHARS = 4096;
 
+/**
+ * Shape of an AWS IoT ATS data endpoint: `<prefix>-ats.iot.<region>.amazonaws.com`.
+ *
+ * This is not cosmetic validation. The endpoint is interpolated into the CSP `connect-src` of
+ * the Amplify `customHeaders` YAML, inside a DOUBLE-QUOTED scalar. A `"` would close the scalar
+ * and a `;` would end the CSP directive — i.e. an operator typo (or a malicious
+ * `-c ugp:iotEndpoint=...`) could inject an arbitrary CSP directive or corrupt the header. The
+ * allow-list of characters here (`[a-z0-9-]`, `.`) makes both impossible by construction.
+ */
+const IOT_ENDPOINT_PATTERN = /^[a-z0-9-]+\.iot\.[a-z0-9-]+\.amazonaws\.com$/;
+
 /** Dashboard defaults. */
 const DEFAULTS = {
   identityPoolName: "ugp_dashboard_guest",
@@ -41,6 +52,20 @@ const DEFAULTS = {
   amplifyBranchName: "main",
   /** Concurrency cap of the public Function URL (see rationale in the constructor). */
   reservedConcurrency: 5,
+  /**
+   * Context key that opts IN to a wildcard (`*`) CORS origin on the status Function URL.
+   * Without it the stack fails closed (see the guard in the constructor).
+   */
+  allowWildcardCorsContextKey: "ugp:allowWildcardCors",
+  /**
+   * Amplify custom-headers path pattern meaning "every object served by the app".
+   * Amplify evaluates the patterns in order; one rule covering everything is enough for an SPA
+   * whose whole surface needs the same baseline.
+   */
+  customHeadersPattern: "**/*",
+  /** Value the `IotEndpoint` output carries when neither context key is provided. */
+  unresolvedIotEndpoint:
+    "UNRESOLVED (pass -c ugp:iotEndpoint=... or -c ugp:resolveIotEndpoint=true)",
 } as const;
 
 /** Props of {@link DashboardStack}. */
@@ -48,7 +73,9 @@ export interface DashboardStackProps extends cdk.StackProps {
   /**
    * Origins allowed by CORS on the status Function URL.
    *
-   * @default ['*'] — and the stack emits a synth warning.
+   * There is NO wildcard default: if omitted (or if the list contains `'*'`) the stack FAILS
+   * CLOSED at synth time unless the wildcard is opted into explicitly with
+   * `-c ugp:allowWildcardCors=true`. See the guard in the constructor.
    */
   readonly allowedOrigins?: readonly string[];
 
@@ -65,6 +92,10 @@ export interface DashboardStackProps extends cdk.StackProps {
    * AWS IoT ATS data endpoint (`<prefix>-ats.iot.<region>.amazonaws.com`).
    * It is stable per account+region and is NOT a secret, but it is not hardcoded either: it is
    * passed via context or resolved with {@link DashboardStackProps.resolveIotEndpoint}.
+   *
+   * A literal value is VALIDATED against {@link IOT_ENDPOINT_PATTERN} and synth throws if it
+   * does not match: this string is interpolated into the CSP `connect-src` of the Amplify
+   * headers, so it must not be able to carry `"` or `;`.
    */
   readonly iotEndpointAddress?: string;
 
@@ -135,16 +166,50 @@ export class DashboardStack extends cdk.Stack {
     const telemetryTopic = props.telemetryTopic ?? DEFAULTS.telemetryTopic;
     const tableName = props.circuitBreakerTableName ?? DEFAULTS.circuitBreakerTableName;
     const maxAttempts = props.maxAttempts ?? DEFAULTS.maxAttempts;
-    const allowedOrigins = [...(props.allowedOrigins ?? ["*"])];
 
     if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10) {
       throw new Error(
         `maxAttempts must be an integer between 1 and 10 (SelfHealingStack contract), received: ${maxAttempts}`,
       );
     }
-    if (allowedOrigins.length === 0) {
+
+    // ── FAIL-CLOSED on the CORS policy of the status Function URL ────────────
+    // The Function URL is `authType=NONE`: CORS is the only thing deciding WHICH pages may read
+    // it from their visitors' browsers. With `'*'` any site on the internet can embed this
+    // endpoint, and a wildcard that is also the *default* is a wildcard nobody notices. The
+    // payload is not sensitive, so the risk is low — but it is surface given away for free, and
+    // the whole point of the golden path is that the insecure option has to be typed out loud.
+    // Same pattern as the OIDC guard in `SelfHealingStack`: synth aborts unless the wildcard is
+    // opted into EXPLICITLY, in which case only the warning below is emitted.
+    const originsFromProps = props.allowedOrigins ? [...props.allowedOrigins] : undefined;
+    if (originsFromProps && originsFromProps.length === 0) {
       throw new Error("allowedOrigins cannot be an empty list: use ['*'] or specific domains.");
     }
+
+    const allowWildcardCorsContext = this.node.tryGetContext(
+      DEFAULTS.allowWildcardCorsContextKey,
+    );
+    const allowWildcardCors =
+      allowWildcardCorsContext === true || allowWildcardCorsContext === "true";
+    // No origins at all is the same request as `['*']`: "let anyone read it".
+    const wildcardRequested = originsFromProps === undefined || originsFromProps.includes("*");
+
+    if (wildcardRequested && !allowWildcardCors) {
+      throw new Error(
+        `${id}: the status Function URL has authType=NONE and ` +
+          (originsFromProps === undefined
+            ? "no CORS origin was provided"
+            : "'*' was passed as a CORS origin") +
+          ", so the template would let ANY website read this endpoint from its visitors' " +
+          "browsers. Pass the Amplify domain: " +
+          "-c ugp:dashboardAllowedOrigins=https://main.<appId>.amplifyapp.com " +
+          "(get it from the AmplifyDefaultDomain output; comma-separate several origins). " +
+          `For a local synth/demo opt in explicitly: -c ${DEFAULTS.allowWildcardCorsContextKey}=true ` +
+          "(that template keeps CORS at '*': do NOT deploy it as the final state).",
+      );
+    }
+
+    const allowedOrigins = originsFromProps ?? ["*"];
 
     cdk.Tags.of(this).add("Component", "web-dashboard", { priority: 300 });
 
@@ -239,11 +304,9 @@ export class DashboardStack extends cdk.Stack {
     this.statusFunctionUrl = this.statusFunction.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.NONE,
       cors: {
-        // TODO(debt): narrow to the Amplify URL as soon as the domain is known:
+        // Narrowed by context; a wildcard requires the explicit opt-in checked at the top of
+        // the constructor:
         //   cdk deploy DashboardStack -c ugp:dashboardAllowedOrigins=https://main.d1234.amplifyapp.com
-        // With '*' any page can read this endpoint from its visitors' browsers. Since the
-        // payload is not sensitive the risk is low, but it is not zero: it is surface given
-        // away for free and it must be closed before the talk.
         allowedOrigins,
         allowedMethods: [lambda.HttpMethod.GET],
         allowedHeaders: ["content-type"],
@@ -252,13 +315,149 @@ export class DashboardStack extends cdk.Stack {
       },
     });
 
+    // Reached only on the explicit opt-in path (`-c ugp:allowWildcardCors=true`); without it the
+    // fail-closed guard at the top of the constructor already aborted the synth.
     if (allowedOrigins.includes("*")) {
       cdk.Annotations.of(this).addWarningV2(
         "ugp:dashboard:cors-wildcard",
-        "The status Function URL accepts CORS from '*'. Before the final deploy, narrow it " +
-          "to the Amplify domain: -c ugp:dashboardAllowedOrigins=https://<branch>.<appId>.amplifyapp.com",
+        "The status Function URL accepts CORS from '*' " +
+          `(${DEFAULTS.allowWildcardCorsContextKey}=true). This template is for LOCAL SYNTH / ` +
+          "DEMO: before the final deploy, narrow it to the Amplify domain with " +
+          "-c ugp:dashboardAllowedOrigins=https://<branch>.<appId>.amplifyapp.com",
       );
     }
+
+    // ── 4. IoT data endpoint ─────────────────────────────────────────────────
+    // It is not a CloudFormation attribute, `iot:DescribeEndpoint` has to be called. The
+    // endpoint is stable per account+region and is NOT a secret, but it is NOT hardcoded
+    // either: either it is passed literally or it is resolved read-only at deploy time. With
+    // neither path taken, the output says so out loud instead of shipping a wrong value.
+    //
+    // Resolved BEFORE the Amplify app on purpose: the CSP `connect-src` below is built from it.
+    let iotEndpoint: string;
+    /**
+     * Host the CSP allows for the MQTT-over-WSS connection, or `undefined` when there is no
+     * endpoint to allow (see the unresolved branch).
+     */
+    let iotCspHost: string | undefined;
+    if (props.iotEndpointAddress) {
+      // Only LITERAL endpoints are validated. A value coming from a custom resource is a
+      // CloudFormation token (`${Token[...]}`), it never reaches this branch, and the regex
+      // would reject it for the wrong reason.
+      if (
+        !cdk.Token.isUnresolved(props.iotEndpointAddress) &&
+        !IOT_ENDPOINT_PATTERN.test(props.iotEndpointAddress)
+      ) {
+        throw new Error(
+          `${id}: iotEndpointAddress ('${props.iotEndpointAddress}') is not a valid AWS IoT ATS ` +
+            "data endpoint. Expected <prefix>-ats.iot.<region>.amazonaws.com " +
+            `(pattern ${IOT_ENDPOINT_PATTERN.source}). This value is interpolated into the CSP ` +
+            "connect-src of the Amplify security headers, so characters like '\"' or ';' could " +
+            "corrupt the header or inject a CSP directive and are rejected here. Get the real " +
+            "value with: aws iot describe-endpoint --endpoint-type iot:Data-ATS.",
+        );
+      }
+      iotEndpoint = props.iotEndpointAddress;
+      iotCspHost = props.iotEndpointAddress;
+    } else if (props.resolveIotEndpoint === true) {
+      const endpoint = new cr.AwsCustomResource(this, "IotDataEndpoint", {
+        onUpdate: {
+          service: "Iot",
+          action: "describeEndpoint",
+          parameters: { endpointType: "iot:Data-ATS" },
+          physicalResourceId: cr.PhysicalResourceId.of(`iot-data-ats-${this.region}`),
+        },
+        policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
+          // `iot:DescribeEndpoint` does not accept resource-level permissions.
+          resources: cr.AwsCustomResourcePolicy.ANY_RESOURCE,
+        }),
+        installLatestAwsSdk: false,
+      });
+      iotEndpoint = endpoint.getResponseField("endpointAddress");
+      iotCspHost = iotEndpoint;
+    } else {
+      iotEndpoint = DEFAULTS.unresolvedIotEndpoint;
+      // No IoT host in the CSP at all on this branch. Two reasons: the 'UNRESOLVED (...)'
+      // sentence is not a valid CSP source (the browser would drop the whole connect-src), and
+      // a region-wide `wss://*.iot.<region>.amazonaws.com` pattern would allow ANY account's
+      // endpoint in the region — surface granted for nothing, because `VITE_IOT_ENDPOINT` is
+      // the sentinel here, so the SPA cannot connect to IoT in this configuration anyway.
+      iotCspHost = undefined;
+      cdk.Annotations.of(this).addWarningV2(
+        "ugp:dashboard:iot-endpoint-unresolved",
+        "VITE_IOT_ENDPOINT comes out unresolved, so the Amplify CSP connect-src carries NO IoT " +
+          "host (the SPA cannot open the MQTT-over-WSS connection with this template). Resolve " +
+          "it with -c ugp:resolveIotEndpoint=true (read-only custom resource) or pass it " +
+          "directly with -c ugp:iotEndpoint=<prefix>-ats.iot.<region>.amazonaws.com " +
+          "(aws iot describe-endpoint --endpoint-type iot:Data-ATS).",
+      );
+    }
+
+    // ── 5. Security headers served by Amplify Hosting ────────────────────────
+    // Amplify serves the SPA from its own CloudFront distribution; without custom headers it
+    // sends neither CSP nor HSTS, which on a public, anonymous dashboard means an injected
+    // script could exfiltrate the guest IoT credentials the page holds in memory.
+    //
+    // `connect-src` is the interesting one: it is the EXACT allow-list of what this page may
+    // talk to — the IoT ATS endpoint over WSS (only when it is known: see the unresolved branch
+    // above), Cognito Identity (which mints the guest credentials) and the status Function URL.
+    // Anything else, including an attacker's collector, is blocked by the browser. The Function
+    // URL is a CloudFormation token, so the YAML below resolves to an `Fn::Join` at synth time:
+    // the header is always consistent with the URL this very stack creates.
+    const cognitoIdentityEndpoint = `https://cognito-identity.${this.region}.amazonaws.com`;
+    const connectSrc = [
+      "'self'",
+      ...(iotCspHost ? [`wss://${iotCspHost}`] : []),
+      cognitoIdentityEndpoint,
+      // `.url` already includes the scheme and a trailing '/', which CSP reads as a path prefix.
+      this.statusFunctionUrl.url,
+    ].join(" ");
+
+    const contentSecurityPolicy = [
+      "default-src 'self'",
+      // Vite emits hashed bundles as files: no inline <script> and no eval needed.
+      "script-src 'self'",
+      // 'unsafe-inline' is required for STYLE only: the SPA uses `style={{...}}` attributes
+      // (e.g. SelfHealing.tsx) and React writes them as inline styles. It does not widen the
+      // script surface, which is what matters here.
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data:",
+      "font-src 'self'",
+      `connect-src ${connectSrc}`,
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+      // Modern equivalent of X-Frame-Options: DENY (sent too, for old browsers).
+      "frame-ancestors 'none'",
+      "upgrade-insecure-requests",
+    ].join("; ");
+
+    /**
+     * Amplify custom headers (YAML, same schema as the console's "Custom headers" tab).
+     * Double-quoted scalars on purpose: the CSP is full of single quotes (`'self'`, `'none'`),
+     * which inside a single-quoted YAML scalar would have to be doubled.
+     */
+    const customHeaders = [
+      "customHeaders:",
+      `  - pattern: '${DEFAULTS.customHeadersPattern}'`,
+      "    headers:",
+      `      - key: 'Content-Security-Policy'`,
+      `        value: "${contentSecurityPolicy}"`,
+      // 1 year + subdomains. No `preload`: that is a one-way submission to the browser list and
+      // this is a demo domain under amplifyapp.com.
+      `      - key: 'Strict-Transport-Security'`,
+      `        value: "max-age=31536000; includeSubDomains"`,
+      `      - key: 'X-Content-Type-Options'`,
+      `        value: "nosniff"`,
+      `      - key: 'X-Frame-Options'`,
+      `        value: "DENY"`,
+      `      - key: 'Referrer-Policy'`,
+      `        value: "strict-origin-when-cross-origin"`,
+      // The dashboard reads telemetry: it needs none of these capabilities.
+      `      - key: 'Permissions-Policy'`,
+      `        value: "geolocation=(), camera=(), microphone=(), payment=(), usb=()"`,
+      "",
+    ].join("\n");
 
     // Optional basic auth for the rehearsals. CloudFormation's `basicAuthConfig` asks for the
     // username and password in clear text, so the password does NOT travel in the template: it
@@ -278,7 +477,7 @@ export class DashboardStack extends cdk.Stack {
         }
       : undefined;
 
-    // ── 4. Amplify Hosting (MANUAL deploy, no git) ───────────────────────────
+    // ── 6. Amplify Hosting (MANUAL deploy, no git) ───────────────────────────
     // No `sourceCodeProvider`/`oauthToken`: the repository does not exist yet and connecting a
     // provider would require a GitHub token with `repo` scope stored in the account. An app
     // without a provider is exactly what Amplify calls "manual deployment": you upload the
@@ -298,6 +497,8 @@ export class DashboardStack extends cdk.Stack {
           status: "200",
         },
       ],
+      // Security headers (CSP/HSTS/nosniff/...) built in section 5.
+      customHeaders,
       basicAuthConfig,
     });
     this.amplifyApp.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
@@ -313,38 +514,7 @@ export class DashboardStack extends cdk.Stack {
     });
     branch.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
 
-    // ── 5. IoT data endpoint ─────────────────────────────────────────────────
-    // It is not a CloudFormation attribute, `iot:DescribeEndpoint` has to be called.
-    let iotEndpoint: string;
-    if (props.iotEndpointAddress) {
-      iotEndpoint = props.iotEndpointAddress;
-    } else if (props.resolveIotEndpoint === true) {
-      const endpoint = new cr.AwsCustomResource(this, "IotDataEndpoint", {
-        onUpdate: {
-          service: "Iot",
-          action: "describeEndpoint",
-          parameters: { endpointType: "iot:Data-ATS" },
-          physicalResourceId: cr.PhysicalResourceId.of(`iot-data-ats-${this.region}`),
-        },
-        policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
-          // `iot:DescribeEndpoint` does not accept resource-level permissions.
-          resources: cr.AwsCustomResourcePolicy.ANY_RESOURCE,
-        }),
-        installLatestAwsSdk: false,
-      });
-      iotEndpoint = endpoint.getResponseField("endpointAddress");
-    } else {
-      iotEndpoint = "UNRESOLVED";
-      cdk.Annotations.of(this).addWarningV2(
-        "ugp:dashboard:iot-endpoint-unresolved",
-        "VITE_IOT_ENDPOINT comes out as 'UNRESOLVED'. Resolve it with " +
-          "-c ugp:resolveIotEndpoint=true (read-only custom resource) or pass it directly with " +
-          "-c ugp:iotEndpoint=<prefix>-ats.iot.<region>.amazonaws.com " +
-          "(aws iot describe-endpoint --endpoint-type iot:Data-ATS).",
-      );
-    }
-
-    // ── 6. Outputs ───────────────────────────────────────────────────────────
+    // ── 7. Outputs ───────────────────────────────────────────────────────────
     const amplifyDomain = `${branch.branchName}.${this.amplifyApp.attrDefaultDomain}`;
 
     new cdk.CfnOutput(this, "IdentityPoolId", {

@@ -56,10 +56,14 @@ new UgpIotStack(app, "UgpIotStack", {
  * Self-healing agent runner.
  *
  * `githubOrg` / `githubRepo` are passed via context because the git repository does not exist
- * yet; with the placeholders the stack synthesizes, but nobody can assume the CI role trust
- * policy (the stack emits a synth warning as a reminder):
+ * yet. The stack FAILS CLOSED: with the placeholders the trust policy of both OIDC roles would
+ * point at a repo anyone could register on GitHub, so synth aborts unless real values are given:
  *
  *   cdk synth SelfHealingStack -c ugp:githubOrg=my-org -c ugp:githubRepo=unified-golden-path
+ *
+ * For a local synth/demo without a repo, opt into the placeholders EXPLICITLY (never deploy it):
+ *
+ *   cdk synth SelfHealingStack -c ugp:allowPlaceholderRepo=true
  */
 new SelfHealingStack(app, "SelfHealingStack", {
   env,
@@ -81,10 +85,16 @@ new SelfHealingStack(app, "SelfHealingStack", {
  * `Arn.format`. That way both stacks deploy and tear down in any order, at the cost of the
  * table name being an explicit contract between them (documented on both sides).
  *
- * Before the final deploy it is worth narrowing CORS and resolving the IoT endpoint:
+ * The stack FAILS CLOSED on the CORS policy of the status Function URL (`authType=NONE`):
+ * without an explicit origin, synth aborts instead of silently shipping `'*'`.
+ *
  *   cdk deploy DashboardStack \
  *     -c ugp:dashboardAllowedOrigins=https://main.d1abc2def3.amplifyapp.com \
  *     -c ugp:resolveIotEndpoint=true
+ *
+ * For a local synth/demo without a domain, opt into the wildcard EXPLICITLY:
+ *
+ *   cdk synth DashboardStack -c ugp:allowWildcardCors=true
  */
 new DashboardStack(app, "DashboardStack", {
   env,

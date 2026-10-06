@@ -53,7 +53,7 @@ vi.mock("../config.js", () => ({
     statusApiConfigured: false,
     awsRegion: "us-east-1",
     identityPoolId: "us-east-1:mock-identity-pool-id",
-    iotEndpoint: "acyee6rss1oux-ats.iot.us-east-1.amazonaws.com",
+    iotEndpoint: "example1234abcd-ats.iot.us-east-1.amazonaws.com",
     telemetryTopic: "ugp/telemetry/ugp-gateway-01",
     statusApiUrl: undefined,
     mqttClientIdPrefix: "ugp-dashboard-",

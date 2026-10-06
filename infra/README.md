@@ -12,6 +12,22 @@ pnpm synth              # synthesize CloudFormation into cdk.out/
 pnpm diff               # diff against the deployed stack
 ```
 
+> **`pnpm synth` / `pnpm diff` fail without GitHub context.** `SelfHealingStack` is
+> **fail-closed**: with the `CHANGE-ME-ORG/CHANGE-ME-REPO` placeholders the trust policy of both
+> OIDC roles would trust a repository anyone could register on GitHub, so synth aborts. Use one
+> of the two forms:
+>
+> ```bash
+> # Real values (the only form that may be deployed)
+> pnpm synth -c ugp:githubOrg=<org> -c ugp:githubRepo=<repo>
+>
+> # Local synth / talk demo: explicit opt-in to the placeholders. NEVER deploy this template.
+> pnpm synth -c ugp:allowPlaceholderRepo=true
+> ```
+>
+> Pass context **without** `--`: `pnpm run <script> -- -c k=v` hands `cdk` a literal `--`, which
+> turns the rest into positional stack selectors and silently drops the context.
+
 > Deploy requires explicit confirmation and a bootstrapped account/region.
 > See `.kiro/skills/aws-safe-ops/SKILL.md`.
 
@@ -49,10 +65,10 @@ CloudFormation cannot generate a key pair. There are two supported paths:
 # A) CSR (recommended): the private key never leaves your machine nor enters the repo
 openssl req -new -newkey rsa:2048 -nodes \
   -keyout device.key -out device.csr -subj "/CN=ugp-gateway-01"
-pnpm synth -- -c ugp:deviceCsrPath=./device.csr
+pnpm synth -c ugp:deviceCsrPath=./device.csr
 
 # B) certificate already existing in the account
-pnpm synth -- -c ugp:deviceCertificateArn=arn:aws:iot:us-east-1:<acct>:cert/<id>
+pnpm synth -c ugp:deviceCertificateArn=arn:aws:iot:us-east-1:<acct>:cert/<id>
 ```
 
 With neither of the two, the stack still synthesizes (Thing + Policy) but without attachments,
@@ -145,7 +161,7 @@ the already resolved document. See the documentation block of `src/constructs/fi
 |---|---|
 | resolved `firmware.url` | set by `create-ota-update`; the template leaves a fail-loud placeholder |
 | rollback health-check | the document declares the contract (`healthCheckSeconds: 120`); the firmware implementation (`esp_ota_mark_app_valid_cancel_rollback()`) arrives in Block 3 |
-| `githubOrg` / `githubRepo` | consumed by `SelfHealingStack` via context (`-c ugp:githubOrg=... -c ugp:githubRepo=...`); not pinned in `cdk.json` |
+| `githubOrg` / `githubRepo` | consumed by `SelfHealingStack` via context (`-c ugp:githubOrg=... -c ugp:githubRepo=...`); not pinned in `cdk.json`. Without them synth **fails** unless `-c ugp:allowPlaceholderRepo=true` |
 
 **Note on `abortConfig`.** With the demo's fleet of 1 device, `minNumberOfExecutedThings: 1` +
 `thresholdPercentage: 100` implies fail-fast: one `FAILED` cancels the job, so the
@@ -163,7 +179,8 @@ retries before aborting, raise `minNumberOfExecutedThings` above the fleet size.
 | `CrewExecutionRole` | `AWS::IAM::Role` | pull scoped to *this* ECR repo + log writing |
 | `ugp-self-healing-circuit-breaker` | `AWS::DynamoDB::Table` | `pk` = `owner/repo#runKey`, PAY_PER_REQUEST, TTL `expiresAt` |
 | `GithubAppSecret` | `AWS::SecretsManager::Secret` | **placeholder**: the PEM is uploaded outside CDK |
-| `ugp-ci-deploy-role` | `AWS::IAM::Role` | GitHub Actions OIDC, least-privilege |
+| `ugp-ci-deploy-role` | `AWS::IAM::Role` | GitHub Actions OIDC, least-privilege (Runner 2: dispatch to Fargate) |
+| `ugp-bedrock-ci-role` | `AWS::IAM::Role` | GitHub Actions OIDC, least-privilege (Runner 1: crew inside Actions) |
 | `/aws/ecs/ugp-self-healing-crew` | `AWS::Logs::LogGroup` | 7 day retention |
 | `CrewVpc` | `AWS::EC2::VPC` | 2 AZs, **0 NAT Gateways**, public subnets only, default SG closed |
 
@@ -204,14 +221,60 @@ any repository in the organization (including a freshly created one) assume the 
 **The OIDC provider is imported, not created.** IAM only allows one `OpenIDConnectProvider` per
 URL and the one for `token.actions.githubusercontent.com` already exists in the account:
 declaring it in CloudFormation fails with `EntityAlreadyExists`, and a `cdk destroy` could delete
-the provider shared by the rest of the pipelines.
+the provider shared by the rest of the pipelines. Both OIDC roles reference that **same imported**
+provider.
+
+### `ugp-bedrock-ci-role` permissions (Runner 1)
+
+`.github/workflows/self-heal-gha.yml` runs the crew **inside the GitHub Actions runner** instead
+of dispatching it to Fargate. It assumes this role via OIDC
+(`role-to-assume: ${{ vars.BEDROCK_CI_ROLE_ARN }}`), so the role carries the permissions of the
+crew *code* — and only the subset that mode needs.
+
+| Action | Resource | Condition |
+|---|---|---|
+| `sts:AssumeRoleWithWebIdentity` | — | `aud` = `sts.amazonaws.com` **and** `sub` = `repo:<org>/<repo>:ref:refs/heads/main` (`StringEquals`) |
+| `bedrock:InvokeModel`, `bedrock:InvokeModelWithResponseStream` | the **same 4 exact ARNs** as the task role (1 inference profile + 3 foundation models) | — |
+| `dynamodb:GetItem`, `dynamodb:UpdateItem` | only `ugp-self-healing-circuit-breaker` | — |
+
+Two statements, zero `Resource: "*"`, no managed policies, `MaxSessionDuration` 1 h. The Bedrock
+ARNs come from the same array the task role uses, and a test asserts both statements are deeply
+equal so they cannot drift.
+
+**No `secretsmanager:GetSecretValue` — this is the deliberate difference against the task role.**
+Runner 1 sets `UGP_ALLOW_ENV_TOKEN=true` and hands the crew the workflow's native `GITHUB_TOKEN`
+(`contents:write` + `pull-requests:write`, scoped to this repo, expiring with the job), so it
+never signs a GitHub App JWT and never reads the PEM. Granting the secret here would give an
+Actions runner a credential valid for the whole App installation. There is also no `ecs:*`
+(Runner 1 launches no task) and no `logs:*` (it reads the CI log through the GitHub API).
+
+**The trust `sub` is pinned to the branch and ignores `ugp:ciSubjectScope`.** The workflow
+triggers on `workflow_run`, an event GitHub always evaluates on the default branch, so the token
+`sub` is exactly `repo:<org>/<repo>:ref:refs/heads/main`. Widening it to `StringLike` would let a
+pull-request workflow — whose content any contributor can propose — obtain Bedrock credentials.
+
+### GitHub repository variables fed by the stack outputs
+
+| Repository variable | Stack output | Used by |
+|---|---|---|
+| `BEDROCK_CI_ROLE_ARN` | `BedrockCiRoleArn` | `self-heal-gha.yml` (Runner 1) |
+| `DDB_TABLE_NAME` | `CircuitBreakerTableName` | both runners |
+| `BEDROCK_MODEL_ID` | `BedrockInferenceProfileArn` (profile id) | both runners |
+| `CI_DEPLOY_ROLE_ARN` | `CiDeployRoleArn` | `self-heal-dispatch.yml` (Runner 2) |
+| `CREW_CLUSTER_NAME` | `CrewClusterName` | `self-heal-dispatch.yml` (Runner 2) |
+| `CREW_TASK_DEF_ARN` | `CrewTaskDefinitionArn` | `self-heal-dispatch.yml` (Runner 2) |
+| `CREW_SUBNET_IDS` | `CrewSubnetIds` | `self-heal-dispatch.yml` (Runner 2) |
+| `SELF_HEAL_MODE` | — (`gha` \| `fargate`) | selects the active runner |
 
 ### Before deploying
 
 ```bash
-# githubOrg/githubRepo are placeholders: without them nobody can assume the trust policy
-# (the stack emits a synth WARNING).
-pnpm synth -- SelfHealingStack -c ugp:githubOrg=<org> -c ugp:githubRepo=<repo>
+# githubOrg/githubRepo are REQUIRED: with the placeholders synth fails (fail-closed), because
+# the trust policy of both OIDC roles would point at a repo anyone could register on GitHub.
+pnpm synth SelfHealingStack -c ugp:githubOrg=<org> -c ugp:githubRepo=<repo>
+
+# Local synth / demo without a repository (warning only, DO NOT deploy the result):
+pnpm synth SelfHealingStack -c ugp:allowPlaceholderRepo=true
 
 # After the deploy, replace the secret's random value with the real private key:
 aws secretsmanager put-secret-value --secret-id <GithubAppSecretArn> \
@@ -220,6 +283,15 @@ aws secretsmanager put-secret-value --secret-id <GithubAppSecretArn> \
 
 Optional: reuse an existing secret with `-c ugp:githubAppSecretArn=<arn>` (the stack then creates
 none).
+
+### Available context
+
+| Context | Effect |
+|---|---|
+| `ugp:githubOrg` / `ugp:githubRepo` | org/repo scoped in the `sub` of both OIDC roles. **Required**: without them synth throws |
+| `ugp:allowPlaceholderRepo=true` | opts into the `CHANGE-ME-*` placeholders: synth succeeds with a warning. Local/demo only, never deploy it |
+| `ugp:githubAppId` / `ugp:githubInstallationId` | GitHub App identifiers injected into the task definition (not secrets) |
+| `ugp:githubAppSecretArn` | reuses an existing secret instead of creating the placeholder one |
 
 ### Cost at rest
 
@@ -270,8 +342,12 @@ The trust policy requires `aud == <this pool>` and `ForAnyValue:StringLike amr =
   a bill.
 - It does not return the raw DynamoDB item: it projects only what is needed and drops
   `expiresAt`/internal keys.
-- **Open debt**: CORS defaults to `*` and the stack emits a synth WARNING. Before the final
-  deploy it must be narrowed to the Amplify domain (see below).
+- **CORS is fail-closed**: there is no wildcard default. Synth **throws** unless an explicit
+  origin is passed with `-c ugp:dashboardAllowedOrigins=https://main.<appId>.amplifyapp.com`.
+  The `-c ugp:allowWildcardCors=true` escape hatch keeps CORS at `*` with a synth warning and is
+  **LOCAL SYNTH / DEMO ONLY** — except for the bootstrap deploy described in
+  [Two-phase deploy](#two-phase-deploy-the-origin-does-not-exist-yet), it must never be the
+  deployed state.
 
 ### Data contract (`GET <StatusApiUrl>`)
 
@@ -308,8 +384,9 @@ explicit contract between both stacks, documented in both.
 
 | Context | Effect |
 |----------|--------|
-| `ugp:dashboardAllowedOrigins` | comma-separated list of CORS origins (defaults to `*` + warning) |
-| `ugp:iotEndpoint` | literal ATS endpoint, if already known |
+| `ugp:dashboardAllowedOrigins` | comma-separated list of CORS origins. **Required**: without it synth fails closed |
+| `ugp:allowWildcardCors=true` | escape hatch: keeps CORS at `*` and emits a warning. Local synth/demo, plus the bootstrap deploy of the [two-phase deploy](#two-phase-deploy-the-origin-does-not-exist-yet) |
+| `ugp:iotEndpoint` | literal ATS endpoint, if already known. Validated against `^[a-z0-9-]+\.iot\.[a-z0-9-]+\.amazonaws\.com$`: synth throws otherwise (it goes into the CSP) |
 | `ugp:resolveIotEndpoint=true` | resolves it with a read-only custom resource (`iot:DescribeEndpoint`) |
 | `ugp:dashboardBasicAuthSecretArn` | ARN of a `{"username","password"}` secret to lock down the hosting during rehearsals |
 
@@ -319,6 +396,120 @@ pnpm synth DashboardStack \
   -c ugp:dashboardAllowedOrigins=https://main.d1abc2def3.amplifyapp.com \
   -c ugp:resolveIotEndpoint=true
 ```
+
+#### Fail-closed CORS on the status Function URL
+
+The Function URL is `authType=NONE`, so CORS is the only thing deciding **which pages** may read
+it from their visitors' browsers. A wildcard that is also the *default* is a wildcard nobody
+notices, so there is no default: synth **aborts** without an explicit origin (same pattern as the
+OIDC guard in `SelfHealingStack`).
+
+```bash
+# ❌ aborts: no origin and no opt-in
+pnpm synth DashboardStack
+# Error: DashboardStack: the status Function URL has authType=NONE and no CORS origin was
+# provided, so the template would let ANY website read this endpoint from its visitors'
+# browsers. Pass the Amplify domain: -c ugp:dashboardAllowedOrigins=https://main.<appId>.amplifyapp.com
+
+# ✅ deployable: CORS scoped to the Amplify domain (no warning)
+pnpm synth DashboardStack -c ugp:dashboardAllowedOrigins=https://main.d1abc2def3.amplifyapp.com
+
+# ⚠️  local synth / demo only: CORS stays at '*' and a warning is emitted. Do NOT deploy it.
+pnpm synth DashboardStack -c ugp:allowWildcardCors=true
+```
+
+Passing `'*'` explicitly inside `ugp:dashboardAllowedOrigins` (alone or mixed with real origins)
+hits the same guard: the wildcard makes the rest of the list irrelevant.
+
+#### Two-phase deploy: the origin does not exist yet
+
+The origin that CORS has to allow is the Amplify domain `https://main.<appId>.amplifyapp.com`,
+and `<appId>` is generated **by this stack**: it does not exist before the first deploy. The
+reverse direction cannot be shortcut either — the CSP `connect-src` embeds the status Function
+URL, so the template cannot self-reference the origin to compute it. Hence the first deploy is a
+bootstrap and the final state is reached on the second:
+
+```bash
+# 1. FIRST deploy — the Amplify domain does not exist yet, so the only way through the
+#    fail-closed guard is the explicit opt-in. This template has CORS at '*': it is a
+#    bootstrap, NOT the final state.
+pnpm --dir infra exec cdk deploy DashboardStack -c ugp:allowWildcardCors=true
+
+# 2. Read the domain the deploy just created.
+ORIGIN="https://$(aws cloudformation describe-stacks --stack-name DashboardStack \
+  --query "Stacks[0].Outputs[?OutputKey=='AmplifyDefaultDomain'].OutputValue" --output text)"
+echo "$ORIGIN"   # https://main.d1abc2def3.amplifyapp.com
+
+# 3. REDEPLOY with CORS scoped to it (add -c ugp:resolveIotEndpoint=true, or
+#    -c ugp:iotEndpoint=..., to also tighten the CSP connect-src).
+pnpm --dir infra exec cdk deploy DashboardStack \
+  -c ugp:dashboardAllowedOrigins="$ORIGIN" \
+  -c ugp:resolveIotEndpoint=true
+
+# 4. VERIFY the wildcard is gone. Access-Control-Allow-Origin must echo the origin, never '*'.
+STATUS_URL=$(aws cloudformation describe-stacks --stack-name DashboardStack \
+  --query "Stacks[0].Outputs[?OutputKey=='StatusApiUrl'].OutputValue" --output text)
+curl -sI -H "Origin: $ORIGIN" "$STATUS_URL" | grep -i access-control-allow-origin
+# access-control-allow-origin: https://main.d1abc2def3.amplifyapp.com   ✅
+# access-control-allow-origin: *                                        ❌ step 3 was skipped
+```
+
+Step 4 is the acceptance criterion of the deploy: while the header answers `*`, any website can
+read this endpoint from its visitors' browsers. Only steps 1–2 are allowed to run with
+`ugp:allowWildcardCors=true`.
+
+#### Resolving `VITE_IOT_ENDPOINT`
+
+The ATS endpoint is **not** a CloudFormation attribute: `iot:DescribeEndpoint` has to be called.
+It is stable per account+region and it is not a secret, but it is **never hardcoded** in the repo.
+Three paths:
+
+1. `-c ugp:iotEndpoint=<prefix>-ats.iot.<region>.amazonaws.com` — literal, zero extra resources.
+   Get it with `aws iot describe-endpoint --endpoint-type iot:Data-ATS`. The value is validated
+   at synth time (see the CSP note below): anything that is not an ATS host throws.
+2. `-c ugp:resolveIotEndpoint=true` — read-only `AwsCustomResource` (`iot:DescribeEndpoint`, the
+   only action in its policy), the same pattern `UgpIotStack` already uses. It adds a Lambda to
+   the stack, which is why it is opt-in.
+3. Neither — the `IotEndpoint` output stays
+   `UNRESOLVED (pass -c ugp:iotEndpoint=... or -c ugp:resolveIotEndpoint=true)`, the CSP carries
+   no IoT host, and synth warns. An honest placeholder beats a wrong value baked into
+   `.env.production`.
+
+#### Security headers served by Amplify
+
+Amplify serves the SPA from its own CloudFront distribution and sends **no** CSP or HSTS by
+default — which, on a public page that holds guest IoT credentials in memory, means an injected
+script could exfiltrate them. The app carries `customHeaders` (pattern `**/*`) with:
+
+| Header | Value |
+|--------|-------|
+| `Content-Security-Policy` | `default-src 'self'`, `script-src 'self'`, `style-src 'self' 'unsafe-inline'`, `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`, `frame-ancestors 'none'`, `upgrade-insecure-requests` |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` (no `preload`: this is a demo domain) |
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Frame-Options` | `DENY` (old-browser equivalent of `frame-ancestors 'none'`) |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+| `Permissions-Policy` | `geolocation=(), camera=(), microphone=(), payment=(), usb=()` |
+
+`connect-src` is the interesting directive: it is the exact allow-list of what the page may talk
+to — `wss://<ats-endpoint>` (MQTT), `https://cognito-identity.<region>.amazonaws.com` (which
+mints the guest credentials) and the status Function URL. The Function URL is a CloudFormation
+token, so the header resolves to an `Fn::Join` and is always consistent with the URL this stack
+creates. `'unsafe-inline'` is tolerated for **styles only** (React `style={{...}}` attributes);
+scripts stay on `'self'`.
+
+When the ATS endpoint is unresolved, `connect-src` carries **no IoT host at all**: the
+`UNRESOLVED (...)` sentence is not a valid CSP source, and a region-wide
+`wss://*.iot.<region>.amazonaws.com` pattern would allow **any** account's IoT endpoint in the
+region — surface granted for nothing, since on that path `VITE_IOT_ENDPOINT` is the sentinel and
+the SPA cannot open the MQTT connection anyway. Resolve the endpoint (paths 1 or 2 above) to get
+the tight value; synth warns while it is missing.
+
+A **literal** endpoint (path 1 / `iotEndpointAddress`) is validated against
+`^[a-z0-9-]+\.iot\.[a-z0-9-]+\.amazonaws\.com$` and synth **throws** if it does not match. The
+reason is this header: the value is interpolated into a double-quoted YAML scalar, where a `"`
+closes the scalar and a `;` ends the CSP directive, so a typo (or a hostile
+`-c ugp:iotEndpoint=...`) could otherwise inject an arbitrary directive into the page's CSP. The
+resolved value (path 2) is a CloudFormation token and skips the check by construction.
 
 The basic auth password never enters the template: it is injected as a *dynamic reference*
 `{{resolve:secretsmanager:<arn>:SecretString:password}}` that CloudFormation resolves at deploy

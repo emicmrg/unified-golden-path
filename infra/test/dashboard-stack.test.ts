@@ -10,17 +10,38 @@ const TEST_ENV = { region: "us-east-1", account: "123456789012" } as const;
 const TELEMETRY_TOPIC = "ugp/telemetry/ugp-gateway-01";
 const TABLE_NAME = "ugp-self-healing-circuit-breaker";
 
-function synthStack(props: Partial<DashboardStackProps> = {}): {
+/**
+ * Context that opts into the wildcard CORS origin. The stack fails closed without an explicit
+ * origin, so the tests that are not about CORS synthesize through this opt-in (equivalent to
+ * `-c ugp:allowWildcardCors=true`) to keep asserting the demo-default template.
+ */
+const ALLOW_WILDCARD_CORS = { "ugp:allowWildcardCors": "true" } as const;
+
+function synthStack(
+  props: Partial<DashboardStackProps> = {},
+  context: Record<string, unknown> = ALLOW_WILDCARD_CORS,
+): {
   stack: DashboardStack;
   template: Template;
 } {
-  const app = new cdk.App();
+  const app = new cdk.App({ context });
   const stack = new DashboardStack(app, "TestDashboardStack", { env: TEST_ENV, ...props });
   return { stack, template: Template.fromStack(stack) };
 }
 
-function synth(props: Partial<DashboardStackProps> = {}): Template {
-  return synthStack(props).template;
+function synth(
+  props: Partial<DashboardStackProps> = {},
+  context: Record<string, unknown> = ALLOW_WILDCARD_CORS,
+): Template {
+  return synthStack(props, context).template;
+}
+
+/** Amplify `customHeaders` of the only `AWS::Amplify::App`, flattened to a string. */
+function customHeadersOf(template: Template): string {
+  const app = Object.values(template.findResources("AWS::Amplify::App"))[0] as any;
+  const headers = app.Properties.CustomHeaders;
+  // With tokens inside (the Function URL), the property is an `Fn::Join`, not a plain string.
+  return typeof headers === "string" ? headers : JSON.stringify(headers);
 }
 
 /** Every statement of every AWS::IAM::Policy in the template. */
@@ -327,8 +348,26 @@ describe("DashboardStack — read-only dashboard backend", () => {
       });
     });
 
-    it("Warns at synth time when CORS is left at '*'", () => {
-      const { stack } = synthStack();
+    // ── fail-closed ──────────────────────────────────────────────────────────
+    it("FAILS CLOSED: throws with no origin and no wildcard opt-in", () => {
+      expect(() => synth({}, {})).toThrow(/no CORS origin was provided/);
+      expect(() => synth({}, {})).toThrow(/ugp:dashboardAllowedOrigins=/);
+      expect(() => synth({}, {})).toThrow(/ugp:allowWildcardCors=true/);
+    });
+
+    it("FAILS CLOSED: throws on an explicit '*' without the opt-in", () => {
+      expect(() => synth({ allowedOrigins: ["*"] }, {})).toThrow(
+        /'\*' was passed as a CORS origin/,
+      );
+      // Mixed list: the wildcard makes the other origins irrelevant, so it is still closed.
+      expect(() => synth({ allowedOrigins: ["https://example.com", "*"] }, {})).toThrow(
+        /ugp:allowWildcardCors=true/,
+      );
+    });
+
+    it("The opt-in synthesizes with '*' and keeps the warning", () => {
+      const { stack, template: optIn } = synthStack({}, ALLOW_WILDCARD_CORS);
+      optIn.hasResourceProperties("AWS::Lambda::Url", { Cors: { AllowOrigins: ["*"] } });
       const warnings = Annotations.fromStack(stack).findWarning(
         "*",
         Match.stringLikeRegexp("CORS from"),
@@ -336,8 +375,17 @@ describe("DashboardStack — read-only dashboard backend", () => {
       expect(warnings.length).toBeGreaterThan(0);
     });
 
-    it("Does not warn when CORS is scoped", () => {
-      const { stack } = synthStack({ allowedOrigins: ["https://example.amplifyapp.com"] });
+    it("Accepts the boolean form of the opt-in context", () => {
+      const t = synth({}, { "ugp:allowWildcardCors": true });
+      t.hasResourceProperties("AWS::Lambda::Url", { Cors: { AllowOrigins: ["*"] } });
+    });
+
+    it("A real origin produces that exact AllowOrigins and no warning", () => {
+      const origin = "https://main.d1abc2def3.amplifyapp.com";
+      // No opt-in context: a scoped origin needs no escape hatch.
+      const { stack, template: scoped } = synthStack({ allowedOrigins: [origin] }, {});
+      const url = Object.values(scoped.findResources("AWS::Lambda::Url"))[0] as any;
+      expect(url.Properties.Cors.AllowOrigins).toEqual([origin]);
       expect(
         Annotations.fromStack(stack).findWarning("*", Match.stringLikeRegexp("CORS from")),
       ).toHaveLength(0);
@@ -374,8 +422,80 @@ describe("DashboardStack — read-only dashboard backend", () => {
       });
     });
 
-    it("Basic auth is disabled by default and the password never goes in the template", () => {
-      const app = Object.values(template.findResources("AWS::Amplify::App"))[0] as any;
+    // ── security headers ─────────────────────────────────────────────────────
+    it("Serves the baseline security headers for every object", () => {
+      const headers = customHeadersOf(template);
+      expect(headers).toContain("customHeaders:");
+      expect(headers).toContain("pattern: '**/*'");
+      [
+        "Content-Security-Policy",
+        "Strict-Transport-Security",
+        "X-Content-Type-Options",
+        "X-Frame-Options",
+        "Referrer-Policy",
+        "Permissions-Policy",
+      ].forEach((key) => expect(headers).toContain(key));
+
+      expect(headers).toContain("max-age=31536000; includeSubDomains");
+      expect(headers).toContain("nosniff");
+      expect(headers).toContain("DENY");
+      expect(headers).toContain("strict-origin-when-cross-origin");
+    });
+
+    it("The CSP locks the document down (no inline scripts, no framing, no plugins)", () => {
+      const headers = customHeadersOf(template);
+      [
+        "default-src 'self'",
+        "script-src 'self'",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+        "upgrade-insecure-requests",
+      ].forEach((directive) => expect(headers).toContain(directive));
+      // 'unsafe-inline' is tolerated for styles only (React style={{...}} attributes).
+      expect(headers).not.toContain("script-src 'self' 'unsafe-inline'");
+      expect(headers).not.toContain("'unsafe-eval'");
+      expect(headers).toContain("style-src 'self' 'unsafe-inline'");
+    });
+
+    it("CSP connect-src is scoped to IoT (wss), Cognito Identity and the Function URL", () => {
+      const endpoint = "abc123-ats.iot.us-east-1.amazonaws.com";
+      const headers = customHeadersOf(synth({ iotEndpointAddress: endpoint }));
+      expect(headers).toContain(`connect-src 'self' wss://${endpoint}`);
+      expect(headers).toContain("https://cognito-identity.us-east-1.amazonaws.com");
+      // The Function URL is a token, so the YAML resolves to an Fn::Join carrying its GetAtt.
+      expect(headers).toContain("FunctionUrl");
+      // No blanket wildcard: that would defeat the point of the allow-list.
+      expect(headers).not.toContain("connect-src *");
+      expect(headers).not.toContain("connect-src 'self' *");
+    });
+
+    it("With an unresolved endpoint the CSP carries NO IoT host at all", () => {
+      const headers = customHeadersOf(template);
+      // Not the sentence (invalid CSP source) and not a region-wide wildcard either: that
+      // pattern would allow ANY account's IoT endpoint in the region, and on this branch
+      // VITE_IOT_ENDPOINT is the sentinel so the SPA cannot connect to IoT anyway.
+      expect(headers).not.toContain("UNRESOLVED");
+      expect(headers).not.toContain("*.iot.");
+      expect(headers).not.toContain("wss://");
+      // The rest of the allow-list is intact.
+      expect(headers).toContain(
+        "connect-src 'self' https://cognito-identity.us-east-1.amazonaws.com",
+      );
+      expect(headers).toContain("FunctionUrl");
+    });
+
+    it("The CSP region follows the stack env", () => {
+      const { template: eu } = synthStack({
+        env: { account: TEST_ENV.account, region: "eu-west-1" },
+      } as Partial<DashboardStackProps>);
+      const headers = customHeadersOf(eu);
+      expect(headers).toContain("https://cognito-identity.eu-west-1.amazonaws.com");
+      expect(headers).not.toContain("cognito-identity.us-east-1");
+    });
+
+    it("Basic auth is disabled by default and the password never goes in the template", () => {      const app = Object.values(template.findResources("AWS::Amplify::App"))[0] as any;
       expect(app.Properties.BasicAuthConfig).toBeUndefined();
 
       // With a secret: the password is resolved at deploy time, it does not materialize in the
@@ -457,18 +577,54 @@ describe("DashboardStack — read-only dashboard backend", () => {
 
   // ────────────────────────────────────────────────────────────────────────────
   describe("IoT endpoint", () => {
-    it("Without context it stays UNRESOLVED and warns at synth time", () => {
+    it("Without context it stays UNRESOLVED, says how to fix it and warns at synth time", () => {
       const { stack, template: t } = synthStack();
-      t.hasOutput("IotEndpoint", { Value: "UNRESOLVED" });
+      t.hasOutput("IotEndpoint", {
+        Value: "UNRESOLVED (pass -c ugp:iotEndpoint=... or -c ugp:resolveIotEndpoint=true)",
+      });
       expect(
         Annotations.fromStack(stack).findWarning("*", Match.stringLikeRegexp("VITE_IOT_ENDPOINT")),
       ).not.toHaveLength(0);
+    });
+
+    it("Never hardcodes a real ATS endpoint when unresolved", () => {
+      // An '-ats.iot.' host in the template would mean someone pasted the account's endpoint.
+      expect(flat(synth().toJSON())).not.toContain("-ats.iot.");
     });
 
     it("Uses the endpoint passed via props without creating custom resources", () => {
       const t = synth({ iotEndpointAddress: "abc123-ats.iot.us-east-1.amazonaws.com" });
       t.hasOutput("IotEndpoint", { Value: "abc123-ats.iot.us-east-1.amazonaws.com" });
       t.resourceCountIs("Custom::AWS", 0);
+    });
+
+    // The literal endpoint lands inside a DOUBLE-QUOTED YAML scalar in the Amplify
+    // customHeaders, so a '"' closes the scalar and a ';' ends the CSP directive: both are
+    // injection vectors into a security header and must not reach the template.
+    it.each([
+      ['a double quote', 'abc-ats.iot.us-east-1.amazonaws.com" evil: "x'],
+      ['a semicolon', "abc-ats.iot.us-east-1.amazonaws.com; script-src *"],
+      ['a space', "abc-ats.iot.us-east-1.amazonaws.com http://evil.test"],
+      ['a foreign domain', "evil.test"],
+      ['an https scheme', "https://abc-ats.iot.us-east-1.amazonaws.com"],
+      ['an empty-ish value', " "],
+    ])("REJECTS a literal iotEndpoint with %s at synth time", (_label, endpoint) => {
+      expect(() => synth({ iotEndpointAddress: endpoint })).toThrow(
+        /is not a valid AWS IoT ATS data endpoint/,
+      );
+    });
+
+    it("Accepts the valid ATS endpoint shape and puts it in the CSP", () => {
+      const endpoint = "example1234abcd-ats.iot.eu-west-1.amazonaws.com";
+      const t = synth({ iotEndpointAddress: endpoint });
+      t.hasOutput("IotEndpoint", { Value: endpoint });
+      expect(customHeadersOf(t)).toContain(`connect-src 'self' wss://${endpoint}`);
+    });
+
+    it("Does NOT validate the resolved endpoint (it is a CloudFormation token)", () => {
+      // The custom resource path yields `${Token[...]}`, which the regex would reject for the
+      // wrong reason; `Token.isUnresolved` short-circuits it.
+      expect(() => synth({ resolveIotEndpoint: true })).not.toThrow();
     });
 
     it("With resolveIotEndpoint it creates a read-only custom resource", () => {
