@@ -1,0 +1,4 @@
+packages:
+  - "infra"
+  - "sample-service"
+  - "web-dashboard"

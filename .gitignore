@@ -1,0 +1,58 @@
+# ─── Node / TypeScript ──────────────────────────────────────────────────────
+node_modules/
+dist/
+*.js.map
+*.d.ts
+*.tsbuildinfo
+# Compiled JS (excluye archivos de config que son JS de origen)
+# No ignoramos *.js globalmente para no afectar scripts .js de raíz intencionales
+infra/bin/*.js
+infra/lib/*.js
+infra/test/*.js
+.env
+.env.*
+!.env.example
+
+# ─── AWS CDK ─────────────────────────────────────────────────────────────────
+cdk.out/
+cdk.context.json
+.cdk.staging/
+
+# ─── Material criptográfico de dispositivos (NUNCA al repo) ──────────────────
+*.key
+*.pem
+*.csr
+*.p12
+certs/
+
+# ─── ESP-IDF / Embedded ──────────────────────────────────────────────────────
+edge-firmware/build/
+# `sdkconfig` lo genera idf.py a partir de sdkconfig.defaults (que SÍ se versiona).
+edge-firmware/sdkconfig
+edge-firmware/sdkconfig.old
+edge-firmware/dependencies.lock
+edge-firmware/managed_components/
+
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# ─── macOS ───────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ─── Editors ─────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo

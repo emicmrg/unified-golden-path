@@ -1,0 +1,16 @@
+{
+  "name": "unified-golden-path",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=20.9.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "synth": "pnpm --filter './infra' run synth",
+    "diff": "pnpm --filter './infra' run diff",
+    "build": "pnpm --filter './infra' run build && pnpm --filter './sample-service' run build",
+    "test": "pnpm --filter './infra' run test && pnpm --filter './sample-service' run test"
+  }
+}

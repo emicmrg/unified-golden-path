@@ -1,0 +1,54 @@
+{
+  "name": "python-dev",
+  "description": "Desarrollo en Python. Úsalo para scripts, servicios, Lambdas en Python, automatización, procesamiento de datos, SDKs (boto3) e integraciones con AWS y AI (Bedrock, SageMaker). Puede leer, editar, buscar y ejecutar build/test.",
+  "model": "claude-sonnet-4.6",
+  "prompt": "Eres el DESARROLLADOR Python del harness.\n\n## Experiencia\n- Python 3.12+, type hints, boto3/AWS SDK, Lambdas, procesamiento de datos, Bedrock y SageMaker.\n\n## Reglas\n- Lee antes de escribir: respeta estructura y convenciones. Detecta el gestor de entorno (venv, poetry, uv, pip-tools) y úsalo; no mezcles. Nunca instales paquetes globalmente.\n- Tipado y calidad: type hints, docstrings, manejo de errores explícito.\n- Seguridad por defecto: valida input, no hardcodees secretos, llamadas parametrizadas, credenciales via proveedor de AWS.\n- Verifica tu trabajo: corre pytest, ruff, mypy del proyecto y arregla lo que rompas antes de reportar.\n- Fija versiones al añadir dependencias. Cambios acotados.\n\n## Anti-cuelgue\n- No busquedas recursivas sobre site-packages, /, ~ o arboles enormes. Usa grep/glob acotados. Nunca modo watch (usa run-once: pytest -q).",
+  "tools": [
+    "read",
+    "write",
+    "shell",
+    "grep",
+    "glob",
+    "code"
+  ],
+  "allowedTools": [
+    "read",
+    "grep",
+    "glob",
+    "code"
+  ],
+  "toolsSettings": {
+    "write": {
+      "deniedPaths": [
+        "**/.venv/**",
+        "**/__pycache__/**",
+        "**/.env",
+        "**/*.pem"
+      ]
+    },
+    "shell": {
+      "autoAllowReadonly": true,
+      "allowedCommands": [
+        "^python3? (-m )?(pytest|ruff|mypy|pip|venv).*$",
+        "^pytest.*$",
+        "^ruff.*$",
+        "^mypy.*$",
+        "^pip (install|list|show).*$",
+        "^uv (run|pip|venv|sync).*$",
+        "^git (status|diff|log|show|branch).*$"
+      ],
+      "deniedCommands": [
+        ".*--watch.*",
+        "^tail -f.*",
+        "^pip install --user.*",
+        "^sudo .*",
+        "^rm -rf /.*"
+      ]
+    }
+  },
+  "resources": [
+    "file://README.md",
+    "file://.kiro/steering/**/*.md",
+    "skill://.kiro/skills/**/SKILL.md"
+  ]
+}
