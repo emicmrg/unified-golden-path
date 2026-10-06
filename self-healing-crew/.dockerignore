@@ -1,0 +1,42 @@
+# ── .dockerignore — self-healing-crew ─────────────────────────────────────
+# Excluir archivos que no deben ir en la imagen de producción
+
+# Entornos virtuales y caché de Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+dist/
+build/
+
+# Archivos de desarrollo y CI local
+.env
+.env.*
+*.env
+tests/
+docs/
+
+# Editor y macOS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# Dockerfile y ficheros de build (no necesarios en la imagen)
+Dockerfile
+.dockerignore
+
+# Git
+.git/
+.gitignore
+
+# README (no necesario en la imagen)
+README.md

@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68.0.0", "wheel>=0.41.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ugp-self-healing-crew"
+version = "0.1.0"
+description = "CI/CD self-healing agent based on CrewAI + Amazon Bedrock"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+dependencies = [
+    # Multi-role agent framework
+    "crewai==0.80.0",
+    # LiteLLM embedded in crewai but pinned explicitly for the bedrock/ route
+    "litellm==1.52.16",
+    # AWS SDK — DynamoDB (circuit breaker), Secrets Manager (GitHub token)
+    "boto3==1.35.74",
+    "botocore==1.35.74",
+    # Configuration validation
+    "pydantic==2.10.3",
+    "pydantic-settings==2.6.1",
+    # GitHub API (open PR, create branch, commit)
+    "PyGithub==2.5.0",
+    # JWT for GitHub App authentication (RS256 signing)
+    "PyJWT==2.10.1",
+    # cryptography backend for RS256 in PyJWT
+    "cryptography==44.0.0",
+    # HTTP client for GitHub API (fetch CI logs, installation token)
+    "requests==2.32.3",
+    # Utilities
+    "tenacity==9.0.0",
+]
+
+[project.scripts]
+ugp-selfheal = "crew.main:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-cov==6.0.0",
+    "moto[dynamodb]==5.0.22",
+    "ruff==0.8.4",
+    "mypy==1.13.0",
+    "boto3-stubs[dynamodb,secretsmanager]==1.35.74",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["crew*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --tb=short"
