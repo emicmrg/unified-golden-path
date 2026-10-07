@@ -410,8 +410,58 @@ describe("DashboardStack — read-only dashboard backend", () => {
       template.hasResourceProperties("AWS::Amplify::App", {
         Name: "ugp-dashboard",
         Platform: "WEB",
-        CustomRules: [{ Source: "/<*>", Target: "/index.html", Status: "200" }],
+        CustomRules: [
+          {
+            Source:
+              "</^[^.]+$|\\.(?!(css|js|gif|ico|jpeg|jpg|png|txt|svg|woff|woff2|ttf|map|json|webp)$)([^.]+$)/>",
+            Target: "/index.html",
+            Status: "200",
+          },
+        ],
       });
+    });
+
+    // Regression guard: the naive catch-all `/<*>` also matched /assets/*.js|css, so Amplify
+    // served index.html (content-type: text/html) for the bundle, the browser refused the
+    // module for having the wrong MIME type and the dashboard rendered a blank page.
+    it("The SPA rewrite excludes static assets so they keep their real content-type", () => {
+      const app = Object.values(template.findResources("AWS::Amplify::App"))[0] as any;
+      const rules = app.Properties.CustomRules as Array<{
+        Source: string;
+        Target: string;
+        Status: string;
+      }>;
+
+      expect(rules).toHaveLength(1);
+      const [rule] = rules;
+      expect(rule.Target).toBe("/index.html");
+      expect(rule.Status).toBe("200");
+
+      // Never the bare catch-all again.
+      expect(rule.Source).not.toBe("/<*>");
+      // Must be an Amplify regex rule (`<...>`) carrying a negative lookahead on extensions.
+      expect(rule.Source).toMatch(/^<\/.*\/>$/);
+      expect(rule.Source).toContain("(?!(");
+      ["css", "js", "svg", "map", "json", "woff2"].forEach((ext) =>
+        expect(rule.Source).toContain(ext),
+      );
+
+      // Behavioural check: evaluate the actual regex the way Amplify would.
+      const pattern = new RegExp(rule.Source.replace(/^<\//, "").replace(/\/>$/, ""));
+
+      // Client routes (extension-less) must rewrite to index.html.
+      ["/fleet", "/devices/abc", "/"].forEach((path) =>
+        expect(pattern.test(path)).toBe(true),
+      );
+
+      // Real static assets must NOT be rewritten.
+      [
+        "/assets/index-IdnR-3tN.js",
+        "/assets/index-DeCnDhiK.css",
+        "/favicon.svg",
+        "/assets/index-abc.js.map",
+        "/logo.png",
+      ].forEach((path) => expect(pattern.test(path)).toBe(false));
     });
 
     it("The branch has no auto-build (with no provider there is nothing to watch)", () => {

@@ -487,12 +487,22 @@ export class DashboardStack extends cdk.Stack {
       description: "Read-only SPA of the Unified Golden Path (manual deploy, no git)",
       platform: "WEB", // static SPA; 'WEB_COMPUTE' is for Next.js SSR.
       // SPA rewrite: without this, reloading /fleet returns 404 because that object does not
-      // exist. `/<*>` is the Amplify syntax for "any path"; status 200 = rewrite (not
-      // redirect), so the browser URL does not change and react-router resolves the route
-      // client-side.
+      // exist. status 200 = rewrite (not redirect), so the browser URL does not change and
+      // react-router resolves the route client-side.
+      //
+      // IMPORTANT: do NOT use the naive catch-all `/<*>`. It matches EVERY path, including
+      // `/assets/index-<hash>.js` and `.css`, so the real files are swallowed and Amplify
+      // returns index.html with `content-type: text/html` for them. The browser then refuses
+      // to execute the module (wrong MIME type) and the page renders blank.
+      //
+      // This is Amplify's documented SPA regex: it rewrites only extension-less paths
+      // (`^[^.]+$`, i.e. client routes like /fleet) plus any extension that is NOT a static
+      // asset type (negative lookahead), so real assets pass through and keep their own
+      // content-type.
       customRules: [
         {
-          source: "/<*>",
+          source:
+            "</^[^.]+$|\\.(?!(css|js|gif|ico|jpeg|jpg|png|txt|svg|woff|woff2|ttf|map|json|webp)$)([^.]+$)/>",
           target: "/index.html",
           status: "200",
         },
