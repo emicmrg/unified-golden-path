@@ -46,9 +46,13 @@ function readDeviceCsr(): string | undefined {
 new UgpIotStack(app, "UgpIotStack", {
   env,
   description:
-    "Unified Golden Path — edge platform: IoT Core registry (Thing/cert/policy) + signed OTA pipeline",
+    "Unified Golden Path — edge platform: IoT Core registry (Thing/cert/policy) + OTA pipeline " +
+    "(firmware code-signing optional, see ugp:signingCertificateArn)",
   deviceCsrPem: readDeviceCsr(),
   deviceCertificateArn: app.node.tryGetContext("ugp:deviceCertificateArn") as string | undefined,
+  // OPTIONAL. Without it no AWS Signer profile is created: the OTA ships unsigned and the
+  // device relies on TLS + the SHA-256 app-image digest. See infra/README.md.
+  signingCertificateArn: app.node.tryGetContext("ugp:signingCertificateArn") as string | undefined,
   resolveIotEndpoint: app.node.tryGetContext("ugp:resolveIotEndpoint") === "true",
 });
 

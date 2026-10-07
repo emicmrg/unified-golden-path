@@ -40,9 +40,79 @@ pnpm diff               # diff against the deployed stack
 | `ugp-cold-chain-gateway-least-privilege` | `AWS::IoT::Policy` | scoped by `${iot:Connection.Thing.ThingName}` |
 | certificate + attachments | `AWS::IoT::Certificate`, `*PrincipalAttachment` | only if a CSR or ARN is passed (see below) |
 | firmware bucket | `AWS::S3::Bucket` | versioned, SSE-S3, TLS≥1.2 enforced, `BLOCK_ALL` |
-| `ugp_cold_chain_firmware` | `AWS::Signer::SigningProfile` | `AWSIoTDeviceManagement-SHA256-ECDSA` |
-| OTA role | `AWS::IAM::Role` | assumed by `iot.amazonaws.com`, least-privilege |
-| `ugp-cold-chain-ota` | `AWS::IoT::JobTemplate` | rollout/retry/abort schema only (see "Launching a signed OTA") |
+| `ugp_cold_chain_firmware` | `Custom::AWS` (`signer:PutSigningProfile`) | **OPTIONAL, not created by default** — only with `-c ugp:signingCertificateArn=<acm-arn>`. See "Code-signing (optional)" below |
+| OTA role | `AWS::IAM::Role` | assumed by `iot.amazonaws.com`, least-privilege. **Zero `signer:*` permissions** unless code-signing is enabled |
+| `ugp-cold-chain-ota` | `AWS::IoT::JobTemplate` | rollout/retry/abort schema only (see "Launching an OTA") |
+
+### Code-signing (optional)
+
+**Default: disabled.** `cdk deploy UgpIotStack` creates no signing profile, no custom resource
+and no `signer:*` IAM statement anywhere in the stack (the default template has **zero**
+statements with `Resource: "*"`). Two reasons, both load-bearing:
+
+1. `AWSIoTDeviceManagement-SHA256-ECDSA` is a **bring-your-own-certificate** platform:
+   `signer:PutSigningProfile` is rejected without `signingMaterial.certificateArn`, and the
+   project has no code-signing certificate in ACM. The profile cannot be created without one, so
+   an unconditional profile fails the deploy.
+2. On-device signature verification is **Block-3 debt A1** (secure boot + signature checks in the
+   firmware). Signing in the cloud while the device does not verify the signature adds no
+   security, and it forces a `signer:PutSigningProfile` grant on `Resource: "*"` (that action has
+   no resource-level permissions) into every deploy for no benefit.
+
+**The OTA pipeline is fully functional without it.** The integrity chain on the default path is
+(a) TLS 1.2+ on the S3 presigned URL — the bucket policy denies anything else — and (b) the
+SHA-256 digest ESP-IDF appends to every app image, which `esp_ota_end()` validates before the new
+partition is marked bootable, so a truncated or corrupted download never boots. What is missing
+versus a signed OTA is *authenticity* (proof of origin), which is exactly what A1 adds.
+
+Honest outputs: with code-signing disabled the stack emits **no** `SigningProfileArn` /
+`SigningProfileName` (no dangling ARN to a profile that does not exist) and the job document omits
+`firmware.signingProfile`. `CodeSigningStatus` always reports the deployed posture.
+
+To enable it, import a SHA256-ECDSA code-signing certificate into ACM (self-signed is enough in
+the sandbox) and pass the ARN:
+
+```bash
+openssl ecparam -name prime256v1 -genkey -noout -out firmware-signing.key
+openssl req -new -x509 -sha256 -days 365 -key firmware-signing.key \
+  -out firmware-signing.crt -subj "/CN=ugp-firmware-signing" \
+  -addext "keyUsage=critical,digitalSignature" \
+  -addext "extendedKeyUsage=critical,codeSigning"
+CERT_ARN=$(aws acm import-certificate \
+  --certificate fileb://firmware-signing.crt \
+  --private-key fileb://firmware-signing.key \
+  --query CertificateArn --output text)
+
+pnpm diff -c ugp:signingCertificateArn=$CERT_ARN                      # read-only
+pnpm exec cdk deploy UgpIotStack -c ugp:signingCertificateArn=$CERT_ARN   # ⚠️ needs confirmation
+```
+
+That path adds: the `Custom::AWS` profile resource (`putSigningProfile` with `signingMaterial`,
+`AWSIoTDeviceManagement-SHA256-ECDSA`, 365-day signatures, cancelled via
+`signer:CancelSigningProfile` on destroy), its **dedicated** provider execution role, and the OTA
+role's scoped `signer:StartSigningJob` + `signer:GetSigningProfile` on the profile ARN. The
+`AWS::Signer::SigningProfile` L1 is **not** used on either path: its CFN registry schema
+hard-codes a stale `PlatformId` enum (`AWSLambda-SHA384-ECDSA`, `Notation-OCI-SHA384-ECDSA`),
+rejects the IoT platform at Early Validation even though the Signer service accepts it, and cannot
+express `signingMaterial`.
+
+IAM split on the enabled path (the two documented wildcards, and the only ones in the stack):
+
+| Action | Resource | Why |
+|---|---|---|
+| `signer:PutSigningProfile` | `*` | no resource types in the Signer authorization reference — the profile does not exist yet when the call is made. Isolated in its own statement, in its own role |
+| `signer:GetSigningProfile`, `signer:CancelSigningProfile` | the profile ARN | both support the `signing-profile` resource type |
+| `signer:StartSigningJob`, `signer:GetSigningProfile` (OTA role) | the profile ARN | AWS IoT can only sign with our profile |
+| `signer:DescribeSigningJob` (OTA role) | `*` | the signing-job ARN only exists after the job is created |
+
+> **Known trade-off (not a bug).** The `AwsCustomResource` provider Lambda is a **per-stack
+> singleton**, so the dedicated role backs every `AwsCustomResource` in `UgpIotStack` — in
+> practice the read-only `iot:DescribeEndpoint` resource when `ugp:resolveIotEndpoint=true`. All
+> of them already run the same function code, so per-resource isolation is not achievable with
+> the shared provider. What the dedicated role buys is an explicit, reviewable home for the
+> wildcard, zero Signer permissions on the default path, and no Signer permissions in the IoT
+> service role. The construct asserts at synth time that it was built before any other
+> `AwsCustomResource` (otherwise CDK silently ignores the `role` prop).
 
 ### Device MQTT permissions
 
@@ -80,6 +150,7 @@ and emits a warning.
 |---|---|
 | `ugp:deviceCsrPath` | path to a PEM CSR → creates `AWS::IoT::Certificate` + attachments |
 | `ugp:deviceCertificateArn` | references an existing cert → attachments only |
+| `ugp:signingCertificateArn` | ACM **code-signing** certificate ARN → enables the AWS Signer profile and the OTA role's Signer grants. Without it the OTA ships unsigned (see "Code-signing (optional)") |
 | `ugp:resolveIotEndpoint=true` | adds a read-only custom resource (`iot:DescribeEndpoint`) and exposes the ATS endpoint as an output |
 
 The account always comes from the active credentials (`CDK_DEFAULT_ACCOUNT`, never hardcoded).
@@ -99,15 +170,16 @@ profile.
    aws iot describe-endpoint --endpoint-type iot:Data-ATS
    ```
 
-### Launching a signed OTA
+### Launching an OTA
 
 `AWS::IoT::OTAUpdate` does not exist in CloudFormation: the OTA is an API call.
 
-**Why the Job Template does not carry the signed binary URL.** AWS Signer writes the signed
-object to `signed/<signingJobId>`, where `signingJobId` is a UUID that only exists after running
-the signing job. It is not knowable at synth time, and `create-job --document-parameters` does
-not apply to custom job templates (only to the AWS *managed templates*). That is why the
-`firmware.url` field of the document is the explicit placeholder
+**Why the Job Template does not carry the firmware URL.** The final S3 key is only known at OTA
+time — and with code-signing enabled AWS Signer writes the signed object to
+`signed/<signingJobId>`, where `signingJobId` is a UUID that only exists after running the signing
+job. It is not knowable at synth time, and `create-job --document-parameters` does not apply to
+custom job templates (only to the AWS *managed templates*). That is why the `firmware.url` field
+of the document is the explicit placeholder
 `REPLACE_VIA_CREATE_OTA_UPDATE:signed-firmware-presigned-url`: if it reached the device
 unreplaced, the OTA fails visibly instead of requesting a non-existent key (silent 404).
 The Job Template provides **only the rollout schema** (timeout, rate limit, retry, abort) and the
@@ -124,11 +196,11 @@ THING_ARN=$(aws cloudformation describe-stacks --stack-name UgpIotStack \
   --query "Stacks[0].Outputs[?OutputKey=='ThingArn'].OutputValue" --output text)
 VERSION=1.0.1
 
-# 1) UNSIGNED binary (Signer input)
+# 1) binary
 aws s3 cp build/ugp-gateway.bin "s3://$BUCKET/unsigned/$VERSION/ugp-gateway.bin"
 
-# 2) OTA Update: IoT signs with our profile, leaves the signed binary in signed/<signingJobId>,
-#    creates the MQTT stream and the IoT Job with the already resolved document.
+# 2) OTA Update: IoT creates the MQTT stream and the IoT Job with the already resolved document.
+#    DEFAULT PATH (code-signing disabled): NO `codeSigning` block in --files.
 aws iot create-ota-update \
   --ota-update-id "ugp-ota-$VERSION" \
   --description "Cold chain OTA $VERSION" \
@@ -142,14 +214,20 @@ aws iot create-ota-update \
   --files '[{
     "fileName":"ugp-gateway.bin",
     "fileType":0,
-    "fileLocation":{"s3Location":{"bucket":"'"$BUCKET"'","key":"unsigned/'"$VERSION"'/ugp-gateway.bin"}},
-    "codeSigning":{"startSigningJobParameter":{
-       "signingProfileName":"ugp_cold_chain_firmware",
-       "destination":{"s3Destination":{"bucket":"'"$BUCKET"'","prefix":"signed/"}}}}
+    "fileLocation":{"s3Location":{"bucket":"'"$BUCKET"'","key":"unsigned/'"$VERSION"'/ugp-gateway.bin"}}
   }]'
 
 # 3) follow-up
 aws iot get-ota-update --ota-update-id "ugp-ota-$VERSION"
+```
+
+Only when the stack was deployed with `-c ugp:signingCertificateArn=<acm-arn>`, add the inline
+signing job to that `--files` entry (the profile name is the `SigningProfileName` output):
+
+```json
+"codeSigning":{"startSigningJobParameter":{
+   "signingProfileName":"ugp_cold_chain_firmware",
+   "destination":{"s3Destination":{"bucket":"<BUCKET>","prefix":"signed/"}}}}
 ```
 
 Manual alternative (debugging): read the REAL key of the signed object and create the job with
@@ -159,6 +237,7 @@ the already resolved document. See the documentation block of `src/constructs/fi
 
 | Topic | Status |
 |---|---|
+| **A1 — firmware signature verification** | the device does **not** verify an image signature yet (secure boot + `esp_ota_*` signature checks land in Block 3). Until then cloud-side code-signing is disabled by default: it would be theater. Integrity is covered by TLS 1.2+ and the SHA-256 app-image digest checked by `esp_ota_end()` |
 | resolved `firmware.url` | set by `create-ota-update`; the template leaves a fail-loud placeholder |
 | rollback health-check | the document declares the contract (`healthCheckSeconds: 120`); the firmware implementation (`esp_ota_mark_app_valid_cancel_rollback()`) arrives in Block 3 |
 | `githubOrg` / `githubRepo` | consumed by `SelfHealingStack` via context (`-c ugp:githubOrg=... -c ugp:githubRepo=...`); not pinned in `cdk.json`. Without them synth **fails** unless `-c ugp:allowPlaceholderRepo=true` |

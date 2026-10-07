@@ -2,7 +2,11 @@ import * as cdk from "aws-cdk-lib";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as iot from "aws-cdk-lib/aws-iot";
 import * as s3 from "aws-cdk-lib/aws-s3";
+// `aws-signer` is imported ONLY for the typed `Platform` enum. The signing profile itself is
+// NOT created with the L1/L2 resource, and it is only created at all when
+// `signingCertificateArn` is supplied — see section 2 of the constructor.
 import * as signer from "aws-cdk-lib/aws-signer";
+import * as cr from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
 
 /** Props of the FirmwareOtaPipeline construct. */
@@ -10,22 +14,60 @@ export interface FirmwareOtaPipelineProps {
   /**
    * AWS Signer Signing Profile name.
    * Signer restriction: only `[0-9a-zA-Z_]` (no hyphens).
+   *
+   * Only used when {@link signingCertificateArn} is supplied; with code-signing disabled no
+   * profile is created and this name is not referenced anywhere in the template.
    */
   readonly signingProfileName: string;
 
   /**
-   * AWS Signer signing platform.
+   * ARN of the **ACM code-signing certificate** backing the signing profile. Supplying it is
+   * what ENABLES code-signing — see the "Code-signing is optional" section of the class docs.
+   *
+   * `AWSIoTDeviceManagement-SHA256-ECDSA` is a *bring-your-own-certificate* platform:
+   * `signer:PutSigningProfile` rejects the request without `signingMaterial.certificateArn`,
+   * so there is no way to create a working profile for it without a real certificate.
+   *
+   * To enable it, import a SHA256-ECDSA code-signing certificate into ACM (self-signed is
+   * enough for a sandbox) and pass the resulting ARN:
+   *
+   * ```bash
+   * openssl ecparam -name prime256v1 -genkey -noout -out firmware-signing.key
+   * openssl req -new -x509 -sha256 -days 365 -key firmware-signing.key \
+   *   -out firmware-signing.crt -subj "/CN=ugp-firmware-signing" \
+   *   -addext "keyUsage=critical,digitalSignature" \
+   *   -addext "extendedKeyUsage=critical,codeSigning"
+   * aws acm import-certificate \
+   *   --certificate fileb://firmware-signing.crt --private-key fileb://firmware-signing.key
+   * cdk deploy UgpIotStack -c ugp:signingCertificateArn=arn:aws:acm:...:certificate/<id>
+   * ```
+   *
+   * @default undefined — code-signing DISABLED (no profile, no custom resource, no Signer IAM)
+   */
+  readonly signingCertificateArn?: string;
+
+  /**
+   * AWS Signer signing platform. Ignored when code-signing is disabled.
    * @default signer.Platform.AWS_IOT_DEVICE_MANAGEMENT_SHA256_ECDSA
    */
   readonly signingPlatform?: signer.Platform;
 
-  /** Validity of the generated signatures. @default 365 days */
+  /** Validity of the generated signatures. Ignored when code-signing is disabled. @default 365 days */
   readonly signatureValidity?: cdk.Duration;
 
-  /** S3 prefix where unsigned binaries are uploaded (Signer input). */
+  /**
+   * S3 prefix where CI/CD uploads the binaries.
+   *
+   * With code-signing ENABLED it is the Signer input; with code-signing DISABLED (the default)
+   * it is the object `create-ota-update` serves directly to the device.
+   */
   readonly unsignedPrefix: string;
 
-  /** S3 prefix where Signer drops the signed binaries (output, source of the OTA). */
+  /**
+   * S3 prefix where Signer drops the signed binaries (output, source of the OTA).
+   * Unused while code-signing is disabled, but the OTA role keeps the grant so that enabling
+   * {@link signingCertificateArn} does not require a second deploy of the bucket layout.
+   */
   readonly signedPrefix: string;
 
   /**
@@ -42,20 +84,45 @@ export interface FirmwareOtaPipelineProps {
 /**
  * FirmwareOtaPipeline — OTA control plane for the ESP32 firmware.
  *
- * It contains the four pieces AWS IoT needs for a signed OTA Update:
- *
  *  1. S3 artifact bucket (versioned — OTA uses `GetObjectVersion`).
- *  2. AWS Signer Signing Profile (binary code-signing).
- *  3. Service role that AWS IoT assumes to sign, create the stream and create the job.
+ *  2. AWS Signer Signing Profile — **OPTIONAL, disabled by default** (see below).
+ *  3. Service role that AWS IoT assumes to create the stream, the job and the presigned URL
+ *     (plus the signing job when code-signing is enabled).
  *  4. IoT Job Template with the job document the firmware interprets.
  *
- * OTA Update WIRING (the step that is NOT declarative in CloudFormation):
+ * ## Code-signing is OPTIONAL (and off by default)
+ *
+ * Passing {@link FirmwareOtaPipelineProps.signingCertificateArn} is what turns it on. Why it is
+ * not on by default:
+ *
+ *  - `AWSIoTDeviceManagement-SHA256-ECDSA` is a *bring-your-own-certificate* platform:
+ *    `signer:PutSigningProfile` fails without `signingMaterial.certificateArn`, and the project
+ *    has no code-signing certificate in ACM. A profile cannot be created without one.
+ *  - On-device signature verification is **deferred to Block 3** (debt A1: secure boot +
+ *    `esp_ota_*` signature checks). Signing in the cloud while the device does not verify the
+ *    signature buys exactly nothing — it would be security theater, plus it forces a
+ *    `signer:PutSigningProfile` grant on `Resource: '*'` (that action has no resource-level
+ *    permissions) into the stack for no benefit.
+ *
+ * **The OTA pipeline is fully functional without it.** On the default path the integrity chain is
+ * (a) TLS 1.2+ on the S3 presigned URL (the bucket denies anything else) and (b) the SHA-256
+ * digest ESP-IDF appends to every app image, which `esp_ota_end()` validates before the new
+ * partition is marked bootable — so a truncated or corrupted download never boots. What is
+ * missing versus a signed OTA is *authenticity* (proof of origin), which is precisely what A1
+ * adds on the device side.
+ *
+ * To enable it: import a SHA256-ECDSA code-signing certificate into ACM and deploy with
+ * `-c ugp:signingCertificateArn=<acm-arn>`. See {@link FirmwareOtaPipelineProps.signingCertificateArn}.
+ *
+ * ## OTA Update WIRING (the step that is NOT declarative in CloudFormation)
+ *
  * `AWS::IoT::OTAUpdate` does not exist as a CloudFormation resource; the OTA Update is an API
  * call (`iot:CreateOTAUpdate`) triggered from CI/CD when there is a new binary.
  *
- * Why the Job Template does NOT carry the signed binary URL: AWS Signer writes the signed
- * object to `<signedPrefix>/<signingJobId>`, with `signingJobId` = a UUID generated at signing
- * time. That key is not known at synth time, so the template document carries the placeholder
+ * Why the Job Template does NOT carry the firmware URL: the final S3 key is only known at OTA
+ * time (and with code-signing on, AWS Signer writes the signed object to
+ * `<signedPrefix>/<signingJobId>` where `signingJobId` is a UUID generated at signing time), so
+ * the template document carries the placeholder
  * {@link FirmwareOtaPipeline.FIRMWARE_URL_PLACEHOLDER} and it is `create-ota-update` that
  * generates the final job document with the correct location.
  *
@@ -68,13 +135,13 @@ export interface FirmwareOtaPipelineProps {
  *   --query "Stacks[0].Outputs[?OutputKey=='ThingArn'].OutputValue" --output text)
  * VERSION=1.0.1
  *
- * # 1) upload the UNSIGNED binary (Signer input)
+ * # 1) upload the binary
  * aws s3 cp build/ugp-gateway.bin \
  *   "s3://$BUCKET/unsigned/$VERSION/ugp-gateway.bin"
  *
- * # 2) create the OTA Update. IoT: (a) calls Signer with our profile, (b) leaves the signed
- * #    binary in signed/<signingJobId>, (c) creates the MQTT stream and (d) creates the IoT Job
- * #    with a job document that ALREADY points at the real location of the signed binary.
+ * # 2) create the OTA Update. IoT creates the MQTT stream and the IoT Job with a job document
+ * #    that ALREADY points at the real location of the binary.
+ * #    DEFAULT PATH (code-signing disabled): NO `codeSigning` block.
  * aws iot create-ota-update \
  *   --ota-update-id "ugp-ota-$VERSION" \
  *   --description "Cold chain OTA $VERSION" \
@@ -88,24 +155,23 @@ export interface FirmwareOtaPipelineProps {
  *   --files '[{
  *     "fileName":"ugp-gateway.bin",
  *     "fileType":0,
- *     "fileLocation":{"s3Location":{"bucket":"'"$BUCKET"'","key":"unsigned/'"$VERSION"'/ugp-gateway.bin"}},
- *     "codeSigning":{"startSigningJobParameter":{
- *        "signingProfileName":"ugp_cold_chain_firmware",
- *        "destination":{"s3Destination":{"bucket":"'"$BUCKET"'","prefix":"signed/"}}}}
+ *     "fileLocation":{"s3Location":{"bucket":"'"$BUCKET"'","key":"unsigned/'"$VERSION"'/ugp-gateway.bin"}}
  *   }]'
+ *
+ * # 2-bis) ONLY with -c ugp:signingCertificateArn=<acm-arn>: add the inline signing job.
+ * #   "codeSigning":{"startSigningJobParameter":{
+ * #      "signingProfileName":"ugp_cold_chain_firmware",
+ * #      "destination":{"s3Destination":{"bucket":"'"$BUCKET"'","prefix":"signed/"}}}}
  *
  * # 3) follow-up
  * aws iot get-ota-update --ota-update-id "ugp-ota-$VERSION"
  * ```
  *
- * Manual alternative (without inline Signer), useful for debugging: sign separately, read the
- * REAL key of the signed object and create a job with an already resolved document.
+ * Manual alternative, useful for debugging: create a job with an already resolved document.
  *
  * ```bash
- * SIGNED_KEY=$(aws signer describe-signing-job --job-id "$SIGNING_JOB_ID" \
- *   --query 'signedObject.s3.key' --output text)
  * aws iot create-job --job-id "ugp-ota-manual-$VERSION" --targets "$THING_ARN" \
- *   --document "$(jq -n --arg u "\${aws:iot:s3-presigned-url:https://s3.amazonaws.com/$BUCKET/$SIGNED_KEY}" \
+ *   --document "$(jq -n --arg u "\${aws:iot:s3-presigned-url:https://s3.amazonaws.com/$BUCKET/$KEY}" \
  *      '{operation:"ota-update",schemaVersion:"1.0",firmware:{url:$u,fileName:"ugp-gateway.bin"},rollback:{enabled:true,healthCheckSeconds:120}}')" \
  *   --presigned-url-config "{\"roleArn\":\"$OTA_ROLE\",\"expiresInSec\":3600}"
  * ```
@@ -127,8 +193,41 @@ export class FirmwareOtaPipeline extends Construct {
   /** Firmware artifact bucket. */
   public readonly firmwareBucket: s3.Bucket;
 
-  /** Code-signing Signing Profile. */
-  public readonly signingProfile: signer.SigningProfile;
+  /**
+   * `true` when {@link FirmwareOtaPipelineProps.signingCertificateArn} was supplied and the
+   * signing profile (and its Signer IAM) therefore exists. `false` on the default path.
+   */
+  public readonly codeSigningEnabled: boolean;
+
+  /**
+   * Code-signing Signing Profile name (`create-ota-update` parameter).
+   * `undefined` when code-signing is disabled — there is no profile to name.
+   */
+  public readonly signingProfileName?: string;
+
+  /**
+   * ARN of the code-signing Signing Profile, or `undefined` when code-signing is disabled.
+   *
+   * Built with {@link cdk.Arn.format} instead of read from a CloudFormation attribute, because
+   * the profile is created by a custom resource (see {@link signingProfileResource}). Format per
+   * the AWS Signer service authorization reference:
+   * `arn:<partition>:signer:<region>:<account>:/signing-profiles/<profileName>` (note the single
+   * leading slash in the resource part).
+   */
+  public readonly signingProfileArn?: string;
+
+  /**
+   * Custom resource that owns the lifecycle of the Signing Profile.
+   * `undefined` when code-signing is disabled — NO custom resource is added to the stack.
+   */
+  public readonly signingProfileResource?: cr.AwsCustomResource;
+
+  /**
+   * Dedicated execution role of {@link signingProfileResource}, created only when code-signing
+   * is enabled, so the `signer:PutSigningProfile` wildcard is not attached to a role CDK
+   * generates implicitly. See the inline note on the singleton provider.
+   */
+  public readonly signingProfileResourceRole?: iam.Role;
 
   /** Service role AWS IoT assumes for OTA/Jobs. */
   public readonly otaServiceRole: iam.Role;
@@ -166,15 +265,150 @@ export class FirmwareOtaPipeline extends Construct {
       ],
     });
 
-    // ── 2. Signing Profile (AWS Signer) ──────────────────────────────────────
-    // Default platform: AWSIoTDeviceManagement-SHA256-ECDSA, the one AWS IoT Device Management
-    // uses for OTA of generic devices (including ESP32 with ESP-IDF).
-    // If the firmware uses the FreeRTOS OTA Agent, switch to AMAZON_FREE_RTOS_DEFAULT.
-    this.signingProfile = new signer.SigningProfile(this, "FirmwareSigningProfile", {
-      platform: props.signingPlatform ?? signer.Platform.AWS_IOT_DEVICE_MANAGEMENT_SHA256_ECDSA,
-      signingProfileName: props.signingProfileName,
-      signatureValidity: props.signatureValidity ?? cdk.Duration.days(365),
-    });
+    // ── 2. Code-signing profile (AWS Signer) — OPTIONAL, OFF BY DEFAULT ──────
+    // GATE: no `signingCertificateArn` ⇒ no profile, no custom resource, no Signer IAM
+    // anywhere in the stack. Two independent reasons (see the class docs for the long form):
+    //
+    //  a) `AWSIoTDeviceManagement-SHA256-ECDSA` is a bring-your-own-certificate platform:
+    //     `signer:PutSigningProfile` is rejected without `signingMaterial.certificateArn`, and
+    //     the project has no code-signing certificate in ACM. The profile simply cannot be
+    //     created without one — deploying it unconditionally fails the stack.
+    //  b) On-device signature verification is deferred to Block 3 (debt A1). Signing in the
+    //     cloud while the device does not check the signature adds no security, and it would
+    //     force a `signer:PutSigningProfile` grant on `Resource: '*'` into every deploy.
+    //
+    // The OTA pipeline below is complete without it: TLS 1.2+ presigned URL + the SHA-256
+    // digest ESP-IDF embeds in the app image, validated by `esp_ota_end()` before the new
+    // partition becomes bootable.
+    const signingCertificateArn = props.signingCertificateArn?.trim();
+    this.codeSigningEnabled = signingCertificateArn !== undefined && signingCertificateArn !== "";
+
+    if (this.codeSigningEnabled && signingCertificateArn !== undefined) {
+      // Fail fast on a malformed value: a typo here only surfaces as a CloudFormation
+      // custom-resource failure several minutes into the deploy.
+      if (!/^arn:[^:]*:acm:[^:]*:\d{12}:certificate\/.+$/.test(signingCertificateArn)) {
+        throw new Error(
+          "ugp:signingCertificateArn must be an ACM certificate ARN " +
+            `(arn:<partition>:acm:<region>:<account>:certificate/<id>), got: ${signingCertificateArn}`,
+        );
+      }
+
+      // WHY A CUSTOM RESOURCE AND NOT `AWS::Signer::SigningProfile`:
+      // The CloudFormation registry schema for `AWS::Signer::SigningProfile` hard-codes a
+      // STALE `PlatformId` enum — it only allows `AWSLambda-SHA384-ECDSA` and
+      // `Notation-OCI-SHA384-ECDSA`. Deploying with `AWSIoTDeviceManagement-SHA256-ECDSA` (the
+      // platform AWS IoT Device Management requires to sign OTA firmware for generic devices,
+      // including the ESP32/ESP-IDF) is rejected before any API call with
+      // `AWS::EarlyValidation::PropertyValidation`. It also has no way to express
+      // `signingMaterial`, which that platform requires.
+      //
+      // The Signer SERVICE does accept it (verified with `aws signer list-signing-platforms`);
+      // the gap is purely in the CFN resource schema. So we drive `signer:PutSigningProfile`
+      // directly through an `AwsCustomResource`, which bypasses Early Validation while keeping
+      // the profile under the stack lifecycle (created on deploy, cancelled on destroy).
+      const signingPlatform =
+        props.signingPlatform ?? signer.Platform.AWS_IOT_DEVICE_MANAGEMENT_SHA256_ECDSA;
+      const signatureValidity = props.signatureValidity ?? cdk.Duration.days(365);
+
+      this.signingProfileName = props.signingProfileName;
+      this.signingProfileArn = cdk.Arn.format(
+        {
+          service: "signer",
+          // Signer ARNs carry the resource inside the resourceName with a leading `/`:
+          // `arn:aws:signer:<region>:<account>:/signing-profiles/<name>`.
+          resource: "",
+          resourceName: `signing-profiles/${props.signingProfileName}`,
+          arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME,
+        },
+        stack,
+      );
+
+      // `putSigningProfile` is idempotent by profile name: on update it just publishes a new
+      // profile version, so the physical id (the name) never changes and CloudFormation never
+      // triggers a replacement.
+      const putSigningProfile: cr.AwsSdkCall = {
+        service: "Signer",
+        action: "putSigningProfile", // SDK v3: PutSigningProfileCommand
+        parameters: {
+          profileName: props.signingProfileName,
+          platformId: signingPlatform.platformId,
+          // REQUIRED by AWSIoTDeviceManagement-SHA256-ECDSA (bring-your-own-certificate).
+          signingMaterial: { certificateArn: signingCertificateArn },
+          signatureValidityPeriod: { value: signatureValidity.toDays(), type: "DAYS" },
+        },
+        physicalResourceId: cr.PhysicalResourceId.of(props.signingProfileName),
+      };
+
+      // Dedicated execution role for the provider Lambda. `signer:PutSigningProfile` has NO
+      // resource-level permissions in the AWS Signer service authorization reference (the
+      // profile does not exist yet when the call is made), so it can only be granted on `*`.
+      // Keeping that grant in a role we own and name makes the wildcard auditable instead of
+      // hiding it in a CDK-generated role, and it never touches `otaServiceRole`.
+      //
+      // CAVEAT, stated explicitly because it is counter-intuitive: the `AwsCustomResource`
+      // provider Lambda is a per-STACK singleton (fixed uuid), so this role backs EVERY
+      // `AwsCustomResource` in the stack, and all of them execute the same function code. The
+      // role prop only takes effect on the FIRST `AwsCustomResource` instantiated, hence the
+      // assertion after the constructor call. Per-resource isolation is not achievable with
+      // the shared provider; what this buys is (1) an explicit, reviewable home for the
+      // wildcard, (2) zero Signer permissions in the stack on the default path, and (3) no
+      // Signer permissions leaking into the IoT service role.
+      this.signingProfileResourceRole = new iam.Role(this, "FirmwareSigningProfileRole", {
+        assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+        description:
+          "Execution role of the AwsCustomResource provider that manages the firmware signing profile",
+        managedPolicies: [
+          iam.ManagedPolicy.fromAwsManagedPolicyName("service-role/AWSLambdaBasicExecutionRole"),
+        ],
+      });
+
+      this.signingProfileResource = new cr.AwsCustomResource(this, "FirmwareSigningProfile", {
+        role: this.signingProfileResourceRole,
+        onCreate: putSigningProfile,
+        onUpdate: putSigningProfile,
+        onDelete: {
+          service: "Signer",
+          // `cancelSigningProfile` (CancelSigningProfileCommand) is the profile-level teardown:
+          // it moves the profile from ACTIVE to CANCELED so it can no longer sign. There is no
+          // `DeleteSigningProfile` in the Signer API, and `revokeSigningProfile` is a different
+          // operation (it invalidates already-issued SIGNATURES, not the profile).
+          action: "cancelSigningProfile", // SDK v3: CancelSigningProfileCommand
+          parameters: { profileName: props.signingProfileName },
+          // A profile already gone/cancelled must not break `cdk destroy`.
+          ignoreErrorCodesMatching: "ResourceNotFoundException|ValidationException",
+        },
+        // Least privilege, split by what the IAM reference actually supports:
+        //  - `PutSigningProfile`: no resource types ⇒ `*` is the only grant that works.
+        //  - `GetSigningProfile` / `CancelSigningProfile`: support the `signing-profile`
+        //    resource type ⇒ scoped to OUR profile ARN.
+        policy: cr.AwsCustomResourcePolicy.fromStatements([
+          new iam.PolicyStatement({
+            sid: "CreateSigningProfileNoResourceLevelPerms",
+            actions: ["signer:PutSigningProfile"],
+            resources: ["*"],
+          }),
+          new iam.PolicyStatement({
+            sid: "ReadAndCancelProjectSigningProfileOnly",
+            actions: ["signer:GetSigningProfile", "signer:CancelSigningProfile"],
+            resources: [this.signingProfileArn],
+          }),
+        ]),
+        // Supply-chain hygiene: use the SDK baked into the Lambda runtime (it ships Signer).
+        installLatestAwsSdk: false,
+      });
+
+      // Enforces the "dedicated role" guarantee: if another `AwsCustomResource` had already
+      // created the singleton provider, the `role` prop above would be silently ignored and
+      // the wildcard would land on a CDK-generated role instead. Instantiate this construct
+      // before any other `AwsCustomResource` in the stack.
+      if (this.signingProfileResource.grantPrincipal !== this.signingProfileResourceRole) {
+        throw new Error(
+          "FirmwareOtaPipeline must be created before any other AwsCustomResource in the " +
+            "stack: the provider Lambda is a per-stack singleton and its execution role is " +
+            "fixed by the first instance, so the dedicated signing-profile role was ignored.",
+        );
+      }
+    }
 
     // ── 3. OTA/Jobs service role ─────────────────────────────────────────────
     // AWS IoT (iot.amazonaws.com) assumes it when creating the OTA Update / generating
@@ -189,7 +423,9 @@ export class FirmwareOtaPipeline extends Construct {
           },
         },
       }),
-      description: "Role AWS IoT assumes to sign firmware, create streams and launch IoT Jobs (OTA)",
+      description: this.codeSigningEnabled
+        ? "Role AWS IoT assumes to sign firmware, create streams and launch IoT Jobs (OTA)"
+        : "Role AWS IoT assumes to create streams and launch IoT Jobs (OTA, code-signing disabled)",
     });
 
     // 3a. S3: read the unsigned binary + write the signed one.
@@ -218,23 +454,28 @@ export class FirmwareOtaPipeline extends Construct {
       }),
     );
 
-    // 3b. AWS Signer: it can only sign with OUR signing profile.
-    this.otaServiceRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "SignWithProjectProfileOnly",
-        actions: ["signer:StartSigningJob", "signer:GetSigningProfile"],
-        resources: [this.signingProfile.signingProfileArn],
-      }),
-    );
-    this.otaServiceRole.addToPolicy(
-      new iam.PolicyStatement({
-        // `signer:DescribeSigningJob` does not support resource-level permissions (the signing
-        // job ARN is only known after creating it), hence the `*`.
-        sid: "DescribeSigningJobs",
-        actions: ["signer:DescribeSigningJob"],
-        resources: ["*"],
-      }),
-    );
+    // 3b. AWS Signer — ONLY when code-signing is enabled. On the default path AWS IoT never
+    //     starts a signing job, so the role carries ZERO `signer:*` permissions (including
+    //     `DescribeSigningJob`, whose `*` resource would otherwise be the only wildcard in the
+    //     whole stack for an action that can never be exercised).
+    if (this.codeSigningEnabled && this.signingProfileArn !== undefined) {
+      this.otaServiceRole.addToPolicy(
+        new iam.PolicyStatement({
+          sid: "SignWithProjectProfileOnly",
+          actions: ["signer:StartSigningJob", "signer:GetSigningProfile"],
+          resources: [this.signingProfileArn],
+        }),
+      );
+      this.otaServiceRole.addToPolicy(
+        new iam.PolicyStatement({
+          // `signer:DescribeSigningJob` does not support resource-level permissions (the
+          // signing job ARN is only known after creating it), hence the `*`.
+          sid: "DescribeSigningJobs",
+          actions: ["signer:DescribeSigningJob"],
+          resources: ["*"],
+        }),
+      );
+    }
 
     // 3c. IoT Jobs + Streams, scoped to this account/region.
     this.otaServiceRole.addToPolicy(
@@ -312,7 +553,10 @@ export class FirmwareOtaPipeline extends Construct {
         // If it reached the device unreplaced, the OTA fails visibly (it is not a URL).
         url: FirmwareOtaPipeline.FIRMWARE_URL_PLACEHOLDER,
         fileName: props.firmwareObjectName,
-        signingProfile: props.signingProfileName,
+        // Only advertised when a profile actually exists: a dangling profile name in the
+        // document would make the firmware (and whoever reads the template) believe the image
+        // is signed when it is not.
+        ...(this.codeSigningEnabled ? { signingProfile: this.signingProfileName } : {}),
       },
       rollback: {
         // Contract with the firmware: after booting the new image, the device has
@@ -326,41 +570,132 @@ export class FirmwareOtaPipeline extends Construct {
       },
     };
 
+    // Typed sub-configurations: SINGLE SOURCE OF TRUTH for the rollout semantics. They are
+    // passed to the L1 below AND re-used by `forcePascalCasePropertyKeys` (see the workaround
+    // note after the construct) so there is no risk of the two drifting apart.
+    const presignedUrlConfig: iot.CfnJobTemplate.PresignedUrlConfigProperty = {
+      roleArn: this.otaServiceRole.roleArn,
+      expiresInSec: 3600,
+    };
+    const timeoutConfig: iot.CfnJobTemplate.TimeoutConfigProperty = {
+      inProgressTimeoutInMinutes: 15,
+    };
+    const jobExecutionsRolloutConfig: iot.CfnJobTemplate.JobExecutionsRolloutConfigProperty = {
+      maximumPerMinute: 5,
+    };
+    const abortConfig: iot.CfnJobTemplate.AbortConfigProperty = {
+      criteriaList: [
+        {
+          // Intent for the demo (fleet of 1 device): fail-fast. With a single execution, one
+          // FAILED reaches 100% and the job is cancelled, so the `numberOfRetries: 2` of
+          // `jobExecutionsRetryConfig` only materializes with fleets > 1.
+          // This is deliberate: in the demo we prefer a bad OTA to cut the rollout
+          // immediately instead of retrying on the only gateway.
+          // To consume the retries before aborting, raise `minNumberOfExecutedThings` above
+          // the fleet size.
+          action: "CANCEL",
+          failureType: "FAILED",
+          minNumberOfExecutedThings: 1,
+          thresholdPercentage: 100,
+        },
+      ],
+    };
+
     this.otaJobTemplate = new iot.CfnJobTemplate(this, "OtaJobTemplate", {
       jobTemplateId: props.jobTemplateId,
       description: "A/B OTA of the cold chain gateway firmware (ESP32)",
       document: stack.toJsonString(jobDocument),
-      presignedUrlConfig: {
-        roleArn: this.otaServiceRole.roleArn,
-        expiresInSec: 3600,
-      },
-      timeoutConfig: {
-        inProgressTimeoutInMinutes: 15,
-      },
-      jobExecutionsRolloutConfig: {
-        maximumPerMinute: 5,
-      },
+      presignedUrlConfig,
+      timeoutConfig,
+      jobExecutionsRolloutConfig,
+      // NOTE: this one is NOT part of the workaround below — aws-cdk-lib already renders its
+      // nested keys in the correct PascalCase (`RetryCriteriaList`/`FailureType`/
+      // `NumberOfRetries`). Do not add it to `forcePascalCasePropertyKeys`.
       jobExecutionsRetryConfig: {
         retryCriteriaList: [{ failureType: "FAILED", numberOfRetries: 2 }],
       },
-      abortConfig: {
-        criteriaList: [
-          {
-            // Intent for the demo (fleet of 1 device): fail-fast. With a single execution, one
-            // FAILED reaches 100% and the job is cancelled, so the `numberOfRetries: 2` above
-            // only materializes with fleets > 1.
-            // This is deliberate: in the demo we prefer a bad OTA to cut the rollout
-            // immediately instead of retrying on the only gateway.
-            // To consume the retries before aborting, raise `minNumberOfExecutedThings` above
-            // the fleet size.
-            action: "CANCEL",
-            failureType: "FAILED",
-            minNumberOfExecutedThings: 1,
-            thresholdPercentage: 100,
-          },
-        ],
-      },
+      abortConfig,
     });
     this.otaJobTemplate.applyRemovalPolicy(cdk.RemovalPolicy.DESTROY);
+
+    // ── WORKAROUND: aws-cdk-lib 2.260.0 L1 casing bug on AWS::IoT::JobTemplate ───────────
+    // The generated L1 for `AWS::IoT::JobTemplate` leaks the TypeScript (camelCase) key names
+    // of these four sub-properties into the synthesized template — e.g. it renders
+    // `AbortConfig: { criteriaList: [{ action, failureType, ... }] }` instead of
+    // `AbortConfig: { CriteriaList: [{ Action, FailureType, ... }] }`.
+    // CloudFormation's Early Validation rejects the change set with
+    // `AWS::EarlyValidation::PropertyValidation` because those keys are unknown.
+    // (`JobExecutionsRetryConfig` is unaffected — its mapper is correct.)
+    //
+    // This is a CASING-ONLY fix: the values come from the typed props above, untouched.
+    // TODO(aws-cdk-lib): remove this whole block (and `forcePascalCasePropertyKeys`) once the
+    // upstream resource mappers are fixed; the typed props alone will then be enough.
+    forcePascalCasePropertyKeys(this.otaJobTemplate, {
+      AbortConfig: abortConfig,
+      TimeoutConfig: timeoutConfig,
+      PresignedUrlConfig: presignedUrlConfig,
+      JobExecutionsRolloutConfig: jobExecutionsRolloutConfig,
+    });
+  }
+}
+
+/** CloudFormation intrinsic function (`Ref` / `Fn::*`) rendered as an object. */
+function isCfnIntrinsic(value: Record<string, unknown>): boolean {
+  const keys = Object.keys(value);
+  return keys.length === 1 && (keys[0] === "Ref" || keys[0].startsWith("Fn::"));
+}
+
+/**
+ * Recursively upper-cases the first letter of every object key, leaving values untouched.
+ * Intrinsics (`Ref`, `Fn::*`) and unresolved tokens are passed through verbatim.
+ *
+ * Part of the `AWS::IoT::JobTemplate` casing workaround — see {@link forcePascalCasePropertyKeys}.
+ */
+function pascalCaseKeys(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(pascalCaseKeys);
+  }
+  if (value !== null && typeof value === "object" && !cdk.Token.isUnresolved(value)) {
+    const record = value as Record<string, unknown>;
+    if (isCfnIntrinsic(record)) {
+      return record;
+    }
+    return Object.fromEntries(
+      Object.entries(record).map(([key, nested]) => [
+        key.charAt(0).toUpperCase() + key.slice(1),
+        pascalCaseKeys(nested),
+      ]),
+    );
+  }
+  return value;
+}
+
+/**
+ * Forces the given top-level resource properties to be synthesized with PascalCase sub-keys.
+ *
+ * WORKAROUND for the aws-cdk-lib 2.260.0 L1 casing bug on `AWS::IoT::JobTemplate`, whose
+ * property mappers emit the TypeScript (camelCase) key names for the nested structures, which
+ * CloudFormation Early Validation rejects (`AWS::EarlyValidation::PropertyValidation`).
+ *
+ * For every block it (a) overrides the property with a PascalCase copy of the SAME values and
+ * (b) adds an explicit deletion override for each original camelCase key — necessary because
+ * CDK *deep-merges* raw overrides into the rendered properties, so without (b) both spellings
+ * would end up in the template.
+ *
+ * TODO(aws-cdk-lib): delete this helper once the upstream mappers are fixed.
+ *
+ * @param resource  L1 resource to patch.
+ * @param blocks    Map of PascalCase property name → the typed (camelCase) config object that
+ *                  was passed to the L1, used as the single source of truth for the values.
+ */
+function forcePascalCasePropertyKeys(
+  resource: cdk.CfnResource,
+  blocks: Record<string, object>,
+): void {
+  for (const [propertyName, config] of Object.entries(blocks)) {
+    resource.addPropertyOverride(propertyName, pascalCaseKeys(config));
+    for (const camelCaseKey of Object.keys(config)) {
+      resource.addPropertyDeletionOverride(`${propertyName}.${camelCaseKey}`);
+    }
   }
 }

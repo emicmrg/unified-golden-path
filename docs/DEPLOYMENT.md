@@ -12,7 +12,7 @@ The CDK app (`infra/src/app.ts`) defines **three independent stacks**:
 
 | Stack | What it owns | Depends on |
 |---|---|---|
-| `UgpIotStack` | IoT Core registry (Thing / Thing Type / policy / optional cert) + signed OTA pipeline (S3 firmware bucket, Signer profile, OTA job template, OTA service role) | nothing |
+| `UgpIotStack` | IoT Core registry (Thing / Thing Type / policy / optional cert) + OTA pipeline (S3 firmware bucket, OTA job template, OTA service role; Signer profile optional, off by default) | nothing |
 | `SelfHealingStack` | ECR repo, ECS/Fargate cluster + task definition, DynamoDB circuit-breaker table, Secrets Manager secret for the GitHub App PEM, two OIDC roles, log group | nothing (the GitHub repo must exist) |
 | `DashboardStack` | Guest Cognito Identity Pool (IoT subscribe only), status Lambda + Function URL, Amplify Hosting app (manual deploy) | *nothing at the CloudFormation level* — it references the circuit-breaker table **by name**, not via `Fn::ImportValue` |
 
@@ -266,9 +266,14 @@ pnpm --dir infra exec cdk deploy UgpIotStack $CTX_ALL $CTX_IOT      # ⚠️ nee
 ```
 
 Outputs: `ThingName`, `ThingArn`, `ThingTypeArn`, `IotPolicyName`, `DeviceCertificateStatus`,
-`FirmwareBucketName`, `SigningProfileArn`, `SigningProfileName`, `OtaServiceRoleArn`,
-`OtaJobTemplateArn`, plus `IotDataEndpointAddress` (with `resolveIotEndpoint=true`) or
-`IotDataEndpointHint`.
+`FirmwareBucketName`, `CodeSigningStatus`, `OtaServiceRoleArn`, `OtaJobTemplateArn`, plus
+`IotDataEndpointAddress` (with `resolveIotEndpoint=true`) or `IotDataEndpointHint`.
+
+Firmware code-signing is **optional and off by default**: no AWS Signer profile, no custom
+resource, no `signer:*` IAM. `CodeSigningStatus` reports `DISABLED:…`, and `SigningProfileArn` /
+`SigningProfileName` are only emitted when the stack is deployed with
+`-c ugp:signingCertificateArn=<acm-arn>`. See `infra/README.md` → "Code-signing (optional)" for
+the rationale (Block-3 debt A1: the device does not verify signatures yet) and the enable steps.
 
 ### 4.2 `SelfHealingStack` — the crew runner
 

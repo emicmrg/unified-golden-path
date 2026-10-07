@@ -40,6 +40,15 @@ export interface UgpIotStackProps extends cdk.StackProps {
   readonly deviceCertificateArn?: string;
 
   /**
+   * ARN of an **ACM code-signing certificate** (SHA256-ECDSA). Supplying it ENABLES the
+   * firmware code-signing profile; without it the OTA pipeline is deployed without AWS Signer
+   * (see `FirmwareOtaPipeline` and `infra/README.md` → "Code-signing (optional)").
+   *
+   * @default undefined — code-signing disabled
+   */
+  readonly signingCertificateArn?: string;
+
+  /**
    * If `true`, adds a read-only custom resource (`iot:DescribeEndpoint`) to expose the ATS
    * data endpoint as an output. It adds a Lambda to the stack, which is why it is opt-in.
    * @default false
@@ -51,8 +60,14 @@ export interface UgpIotStackProps extends cdk.StackProps {
  * UgpIotStack — control plane of The Unified Golden Path *edge platform*.
  *
  * Creates the gateway registration in AWS IoT Core (Thing Type, Thing, X.509 certificate and a
- * least-privilege IoT Policy scoped by ThingName) and the signed OTA pipeline (S3 artifact
- * bucket, AWS Signer signing profile, OTA service role and IoT Job Template).
+ * least-privilege IoT Policy scoped by ThingName) and the OTA pipeline (S3 artifact bucket, OTA
+ * service role and IoT Job Template).
+ *
+ * Firmware code-signing (AWS Signer) is OPTIONAL and disabled by default: it requires an ACM
+ * code-signing certificate that the project does not have, and on-device signature verification
+ * is Block-3 debt (A1), so signing in the cloud would add no security while forcing a
+ * `signer:PutSigningProfile` wildcard into the stack. Enable it with
+ * `-c ugp:signingCertificateArn=<acm-arn>`.
  *
  * It contains nothing hardcoded about account/region: everything comes from `props.env` /
  * `this.account`.
@@ -78,9 +93,13 @@ export class UgpIotStack extends cdk.Stack {
       importedCertificateArn: props.deviceCertificateArn,
     });
 
-    // ── Signed OTA pipeline ──────────────────────────────────────────────────
+    // ── OTA pipeline (code-signing optional, see below) ──────────────────────
+    // NOTE: this must stay the FIRST `AwsCustomResource` owner in the stack — the provider
+    // Lambda is a per-stack singleton and the signing-profile resource claims a dedicated
+    // execution role for its `signer:PutSigningProfile` wildcard.
     const ota = new FirmwareOtaPipeline(this, "FirmwareOta", {
       signingProfileName: DEFAULTS.signingProfileName,
+      signingCertificateArn: props.signingCertificateArn,
       unsignedPrefix: DEFAULTS.unsignedPrefix,
       signedPrefix: DEFAULTS.signedPrefix,
       firmwareObjectName: DEFAULTS.firmwareObjectName,
@@ -117,22 +136,40 @@ export class UgpIotStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, "FirmwareBucketName", {
       value: ota.firmwareBucket.bucketName,
-      description: `OTA firmware bucket (upload to ${DEFAULTS.unsignedPrefix}/, Signer writes to ${DEFAULTS.signedPrefix}/)`,
+      description: ota.codeSigningEnabled
+        ? `OTA firmware bucket (upload to ${DEFAULTS.unsignedPrefix}/, Signer writes to ${DEFAULTS.signedPrefix}/)`
+        : `OTA firmware bucket (upload to ${DEFAULTS.unsignedPrefix}/; code-signing disabled, nothing writes to ${DEFAULTS.signedPrefix}/)`,
     });
 
-    new cdk.CfnOutput(this, "SigningProfileArn", {
-      value: ota.signingProfile.signingProfileArn,
-      description: "ARN of the AWS Signer signing profile used to sign the firmware",
+    // Honest code-signing status: with no profile we must NOT emit an ARN pointing at a
+    // signing profile that does not exist. The status output always exists so the deployed
+    // posture is readable from `describe-stacks` alone.
+    new cdk.CfnOutput(this, "CodeSigningStatus", {
+      value: ota.codeSigningEnabled
+        ? `ENABLED:${ota.signingProfileName}`
+        : "DISABLED: no AWS Signer profile. The OTA relies on TLS 1.2+ and the SHA-256 app-image " +
+          "digest validated by esp_ota_end(). On-device signature verification is Block-3 debt " +
+          "A1. To enable: -c ugp:signingCertificateArn=<acm-code-signing-cert-arn>",
+      description: "Whether the firmware OTA pipeline signs the binary with AWS Signer",
     });
 
-    new cdk.CfnOutput(this, "SigningProfileName", {
-      value: ota.signingProfile.signingProfileName,
-      description: "Signing profile name (create-ota-update parameter)",
-    });
+    if (ota.codeSigningEnabled) {
+      new cdk.CfnOutput(this, "SigningProfileArn", {
+        value: ota.signingProfileArn as string,
+        description: "ARN of the AWS Signer signing profile used to sign the firmware",
+      });
+
+      new cdk.CfnOutput(this, "SigningProfileName", {
+        value: ota.signingProfileName as string,
+        description: "Signing profile name (create-ota-update codeSigning parameter)",
+      });
+    }
 
     new cdk.CfnOutput(this, "OtaServiceRoleArn", {
       value: ota.otaServiceRole.roleArn,
-      description: "Role AWS IoT assumes to sign, create streams and launch the OTA IoT Jobs",
+      description: ota.codeSigningEnabled
+        ? "Role AWS IoT assumes to sign, create streams and launch the OTA IoT Jobs"
+        : "Role AWS IoT assumes to create streams and launch the OTA IoT Jobs",
     });
 
     new cdk.CfnOutput(this, "OtaJobTemplateArn", {
