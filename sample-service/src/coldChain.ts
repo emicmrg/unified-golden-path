@@ -7,6 +7,7 @@
  */
 
 // Self-healing dry-run marker: 2026-10-08 (re-trigger CI for a fresh run_key)
+// Dry-run e2e #2: crew image e20bbc9 (robust FILE extraction + path guards)
 
 // ---------------------------------------------------------------------------
 // Types
