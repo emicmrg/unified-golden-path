@@ -183,6 +183,7 @@ def _invoke_run(
         ),
         patch("crew.main.Crew") as mock_crew_cls,
         patch("crew.main.fetch_file_content", return_value="old content"),
+        patch("crew.main.resolve_repo_path", side_effect=lambda **kw: kw["path"]),
         patch(
             "crew.main.create_branch_and_commit",
             return_value="fix/selfheal-run-42-1",
@@ -279,6 +280,7 @@ class TestN1IntegrationGuard:
             ),
             patch("crew.main.Crew") as mock_crew_cls,
             patch("crew.main.fetch_file_content", return_value="old"),
+            patch("crew.main.resolve_repo_path", side_effect=lambda **kw: kw["path"]),
             patch("crew.main.create_branch_and_commit") as mock_create,
             patch("crew.main.open_pull_request") as mock_pr,
         ):
@@ -357,6 +359,7 @@ class TestN2PatchImpossibleIntegration:
             ),
             patch("crew.main.Crew") as mock_crew_cls,
             patch("crew.main.fetch_file_content", return_value="old"),
+            patch("crew.main.resolve_repo_path", side_effect=lambda **kw: kw["path"]),
             patch("crew.main.create_branch_and_commit") as mock_create,
             patch("crew.main.open_pull_request") as mock_pr,
         ):
@@ -524,6 +527,7 @@ class TestNoFileInRcaFailClosed:
             ),
             patch("crew.main.Crew") as mock_crew_cls,
             patch("crew.main.fetch_file_content", return_value="old content"),
+            patch("crew.main.resolve_repo_path", side_effect=lambda **kw: kw["path"]),
             patch("crew.main.create_branch_and_commit") as mock_create,
             patch("crew.main.open_pull_request") as mock_pr,
         ):

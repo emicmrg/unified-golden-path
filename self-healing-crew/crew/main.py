@@ -41,6 +41,7 @@ from crew.tools import (
     fetch_file_content,
     get_github_token,
     open_pull_request,
+    resolve_repo_path,
 )
 from crew.verdict import extract_diff, extract_file_content, extract_file_path, parse_verdict
 
@@ -274,6 +275,32 @@ def run(argv: list[str] | None = None) -> int:
     file_path_for_fix = extract_file_path(analysis_output)
     if file_path_for_fix:
         logger.info("FILE field extracted from RCA: '%s'", file_path_for_fix)
+
+        # Resolve package-relative paths against the real repository tree.
+        # Monorepo CI logs print paths like 'src/coldChain.ts' while the real
+        # path is 'sample-service/src/coldChain.ts'. Deterministic, no LLM.
+        resolved_path = resolve_repo_path(
+            repo=repo,
+            token=github_token,
+            path=file_path_for_fix,
+            ref=base_branch,
+        )
+        if resolved_path is None:
+            logger.error(
+                "FILE '%s' from the RCA could not be resolved to a real file on "
+                "branch '%s' — refusing to continue with an unverified path.",
+                file_path_for_fix,
+                base_branch,
+            )
+            return 1
+        if resolved_path != file_path_for_fix:
+            logger.info(
+                "FILE path resolved to repository-relative: '%s' -> '%s'",
+                file_path_for_fix,
+                resolved_path,
+            )
+        file_path_for_fix = resolved_path
+
         # Fetch real content from the base branch
         try:
             real_file_content = fetch_file_content(
@@ -468,6 +495,32 @@ def run(argv: list[str] | None = None) -> int:
     # targeted a path it invented (never fetched from the real repo).  This
     # check is independent of the LLM: it is a hard code-level barrier.
     #
+    # Rule 0 — canonicalise the path the fix-engineer returned against the real
+    #   repository tree.  The engineer often echoes the package-relative path it
+    #   saw in the log ('src/coldChain.ts'); resolving it first means Rule 1
+    #   compares two canonical paths instead of failing on a cosmetic mismatch.
+    #   Resolution failure is itself a hallucination signal -> fail closed.
+    resolved_apply_path = resolve_repo_path(
+        repo=repo,
+        token=github_token,
+        path=apply_file_path,
+        ref=base_branch,
+    )
+    if resolved_apply_path is None:
+        logger.error(
+            "fix-engineer targeted a path that does not exist on base branch: "
+            "%s — refusing to create a hallucinated file",
+            apply_file_path,
+        )
+        return 1
+    if resolved_apply_path != apply_file_path:
+        logger.info(
+            "apply path resolved to repository-relative: '%s' -> '%s'",
+            apply_file_path,
+            resolved_apply_path,
+        )
+        apply_file_path = resolved_apply_path
+
     # Rule 1 — apply_file_path MUST match file_path_for_fix (the path whose
     #   content was fetched and injected into the fix-engineer prompt).  A
     #   mismatch means the fix-engineer changed the path, which is almost always

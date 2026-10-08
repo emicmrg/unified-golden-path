@@ -350,6 +350,7 @@ def _invoke_run_d2(
         ),
         patch("crew.main.Crew") as mock_crew_cls,
         patch("crew.main.fetch_file_content", fetch_mock),
+        patch("crew.main.resolve_repo_path", side_effect=lambda **kw: kw["path"]),
         patch("crew.main.create_branch_and_commit", mock_create),
         patch("crew.main.open_pull_request", mock_pr),
     ):

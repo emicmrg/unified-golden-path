@@ -93,17 +93,37 @@ def extract_file_path(analyze_output: str) -> str | None:
     if not raw_value:
         return None
 
+    # Reject sentinel values before any token extraction.
+    if raw_value.upper() in _NO_FILE_SENTINELS:
+        return None
+
+    # The LLM frequently returns prose instead of a bare path, e.g.
+    #   "src/a.test.ts:31 and src/a.test.ts:131 (test failures indicating ...)"
+    # Only the FIRST path-like token is meaningful; everything after it is
+    # either a second path (we deliberately ignore extras — the contract is one
+    # file per run) or explanatory prose that would corrupt the API call.
+    #
+    # A path-like token: optional dirs, then a basename with an extension.
+    # Allowed chars are deliberately restrictive so prose cannot sneak in.
+    token_match = re.search(
+        r"[A-Za-z0-9_.\-/]*[A-Za-z0-9_\-]+\.[A-Za-z0-9]{1,10}(?::\d[\d\-]*)?",
+        raw_value,
+    )
+    if not token_match:
+        return None
+
+    path_candidate = token_match.group(0)
+
     # Strip a trailing :<number> or :<number>-<number> line-reference suffix.
     # We only strip a purely numeric suffix so we don't mangle paths that
     # legitimately contain colons (rare but possible in URL-like paths).
-    path_candidate = re.sub(r":\d[\d\-]*$", "", raw_value)
+    path_candidate = re.sub(r":\d[\d\-]*$", "", path_candidate)
+
+    # Strip surrounding quotes/backticks and stray leading "./".
+    path_candidate = path_candidate.strip("`'\"").removeprefix("./")
 
     # Reject sentinel values
     if path_candidate.upper() in _NO_FILE_SENTINELS:
-        return None
-
-    # Reject parenthesised values like "(multiple files)" — starts with "("
-    if path_candidate.startswith("("):
         return None
 
     # A plausible file path must contain at least one "/" or "."

@@ -463,6 +463,106 @@ def fetch_file_content(
     return content
 
 
+# ─── Deterministic repository path resolution ─────────────────────────────────
+
+
+def resolve_repo_path(
+    repo: str,
+    token: str,
+    path: str,
+    ref: str,
+    *,
+    github_client: Github | None = None,
+) -> str | None:
+    """Resolves a possibly package-relative path to a real repository path.
+
+    CI logs in a monorepo print paths relative to the package that ran the
+    test (e.g. ``src/coldChain.ts`` when the real path is
+    ``sample-service/src/coldChain.ts``). Feeding the package-relative path to
+    the GitHub contents API yields a 404, which previously made the crew lose
+    the real file content and fall back to guessing.
+
+    This resolver is fully deterministic (no LLM): it lists the git tree of
+    ``ref`` and looks for entries whose path matches ``path`` on a
+    SEGMENT-ALIGNED suffix basis. Segment alignment prevents
+    ``src/coldChain.ts`` from matching ``other/notsrc/coldChain.ts``.
+
+    Resolution order:
+      1. Exact match — ``path`` exists verbatim in the tree.
+      2. Unique segment-aligned suffix match.
+      3. Unique basename match (last resort).
+
+    Ambiguity is treated as failure: if several files match, we return ``None``
+    rather than guessing, so the caller can fail closed.
+
+    Args:
+        repo: Repository in 'org/repo' format.
+        token: GitHub token with contents:read permissions.
+        path: Candidate path, possibly package-relative.
+        ref: Branch name or commit SHA whose tree is inspected.
+        github_client: Injected Github client (for tests).
+
+    Returns:
+        The repository-relative path, or ``None`` if it cannot be resolved
+        unambiguously.
+    """
+    candidate = path.strip().strip("`'\"").removeprefix("./").lstrip("/")
+    if not candidate:
+        return None
+
+    gh = github_client or Github(token)
+
+    try:
+        gh_repo: Repository = gh.get_repo(repo)
+        branch = gh_repo.get_branch(ref)
+        tree = gh_repo.get_git_tree(branch.commit.sha, recursive=True)
+    except Exception as exc:  # pragma: no cover - network failure path
+        logger.warning("Could not list git tree for %s@%s: %s", repo, ref, exc)
+        return None
+
+    blob_paths = [e.path for e in tree.tree if e.type == "blob"]
+
+    # 1. Exact match
+    if candidate in blob_paths:
+        return candidate
+
+    # 2. Segment-aligned suffix match: the tree path must end with
+    #    "/" + candidate, so segment boundaries line up.
+    suffix_matches = [p for p in blob_paths if p.endswith("/" + candidate)]
+    if len(suffix_matches) == 1:
+        resolved = suffix_matches[0]
+        logger.info("Resolved path '%s' -> '%s' (suffix match)", candidate, resolved)
+        return resolved
+    if len(suffix_matches) > 1:
+        logger.warning(
+            "Ambiguous path '%s': %d candidates in %s@%s (%s) — refusing to guess",
+            candidate,
+            len(suffix_matches),
+            repo,
+            ref,
+            ", ".join(sorted(suffix_matches)[:5]),
+        )
+        return None
+
+    # 3. Basename match (last resort)
+    basename = candidate.rsplit("/", 1)[-1]
+    base_matches = [p for p in blob_paths if p.rsplit("/", 1)[-1] == basename]
+    if len(base_matches) == 1:
+        resolved = base_matches[0]
+        logger.info("Resolved path '%s' -> '%s' (basename match)", candidate, resolved)
+        return resolved
+    if len(base_matches) > 1:
+        logger.warning(
+            "Ambiguous basename '%s': %d candidates — refusing to guess",
+            basename,
+            len(base_matches),
+        )
+        return None
+
+    logger.warning("Path '%s' not found in %s@%s", candidate, repo, ref)
+    return None
+
+
 # ─── Create branch and commit ─────────────────────────────────────────────────
 
 
