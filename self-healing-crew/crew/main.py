@@ -33,7 +33,6 @@ from crew.agents import build_agents
 from crew.circuit_breaker import CircuitBreaker
 from crew.config import get_settings
 from crew.tasks import build_tasks
-from crew.verdict import extract_diff, extract_file_content, parse_verdict
 from crew.tools import (
     MainBranchProtectionError,
     create_branch_and_commit,
@@ -43,6 +42,7 @@ from crew.tools import (
     get_github_token,
     open_pull_request,
 )
+from crew.verdict import extract_diff, extract_file_content, extract_file_path, parse_verdict
 
 # ─── Logger configuration ─────────────────────────────────────────────────────
 
@@ -266,58 +266,40 @@ def run(argv: list[str] | None = None) -> int:
 
     # ── 6. Extract FILE field and fetch real content (defect #2 fix) ──────────
     # The log-analyst emits: "- FILE: <path:line or 'N/A'>"
-    # Extract the path portion (strip any ":line" suffix).
+    # extract_file_path (crew/verdict.py) tolerates all Markdown variants that
+    # LLMs produce: emphasis, backticks, list markers, :line suffixes, N/A, etc.
     file_path_for_fix: str | None = None
     real_file_content: str | None = None
 
-    file_field_match = re.search(
-        r"(?:^|\n)\s*-?\s*FILE:\s*(.+?)(?:\s*$|\n)",
-        analysis_output,
-        re.IGNORECASE,
-    )
-    if file_field_match:
-        raw_file_field = file_field_match.group(1).strip()
-        # Strip line number suffix (e.g. "sample-service/src/coldChain.ts:42" → path only)
-        candidate_path = raw_file_field.split(":")[0].strip()
-        if candidate_path and candidate_path.upper() not in ("N/A", "NA", "UNKNOWN"):
-            file_path_for_fix = candidate_path
+    file_path_for_fix = extract_file_path(analysis_output)
+    if file_path_for_fix:
+        logger.info("FILE field extracted from RCA: '%s'", file_path_for_fix)
+        # Fetch real content from the base branch
+        try:
+            real_file_content = fetch_file_content(
+                repo=repo,
+                token=github_token,
+                path=file_path_for_fix,
+                ref=base_branch,
+            )
             logger.info(
-                "FILE field extracted from RCA: '%s' (raw: '%s')",
+                "Real file content fetched: path=%s ref=%s size=%d chars",
                 file_path_for_fix,
-                raw_file_field,
+                base_branch,
+                len(real_file_content),
             )
-            # Fetch real content from the failed branch
-            try:
-                real_file_content = fetch_file_content(
-                    repo=repo,
-                    token=github_token,
-                    path=file_path_for_fix,
-                    ref=base_branch,
-                )
-                logger.info(
-                    "Real file content fetched: path=%s ref=%s size=%d chars",
-                    file_path_for_fix,
-                    base_branch,
-                    len(real_file_content),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Could not fetch real content for '%s' on branch '%s': %s. "
-                    "fix-engineer will proceed without injected file content.",
-                    file_path_for_fix,
-                    base_branch,
-                    exc,
-                )
-                real_file_content = None
-        else:
+        except Exception as exc:
             logger.warning(
-                "FILE field is '%s' — no specific file to fetch; "
-                "fix-engineer will work from the RCA diagnosis only.",
-                raw_file_field,
+                "Could not fetch real content for '%s' on branch '%s': %s. "
+                "fix-engineer will proceed without injected file content.",
+                file_path_for_fix,
+                base_branch,
+                exc,
             )
+            real_file_content = None
     else:
         logger.warning(
-            "No FILE field found in analyze output; "
+            "No FILE field found in analyze output (or value was N/A/unknown); "
             "fix-engineer will work from the RCA diagnosis only."
         )
 
@@ -374,6 +356,19 @@ def run(argv: list[str] | None = None) -> int:
 
     # APPLY: extract corrected file content from fix_task output (defect #1 fix)
     fix_output = fix_task.output.raw if fix_task.output else ""
+
+    # ── #9: No FILE guard (fail-closed when RCA has no concrete file) ─────────
+    # If the log-analyst did not identify a concrete file in the RCA,
+    # file_path_for_fix is None. Applying anything in this state risks
+    # committing a hallucinated path invented by the fix-engineer. The crew
+    # auto-repairs only files explicitly identified in the diagnosis; without
+    # a FILE, escalate to human instead.
+    if file_path_for_fix is None:
+        logger.error(
+            "no concrete file identified in RCA; "
+            "refusing to apply to avoid hallucinated path"
+        )
+        return 1
 
     # ── N2: PATCH_IMPOSSIBLE safety net ───────────────────────────────────────
     # If the fix-engineer declared PATCH_IMPOSSIBLE, stop immediately — even if
@@ -465,6 +460,42 @@ def run(argv: list[str] | None = None) -> int:
         logger.error(
             "Reviewer approved but there is no content to apply. "
             "Manually review the fix_engineer output."
+        )
+        return 1
+
+    # ── D2: Deterministic path guard (hallucination barrier) ──────────────────
+    # The reviewer is an LLM and may approve a patch even when the fix-engineer
+    # targeted a path it invented (never fetched from the real repo).  This
+    # check is independent of the LLM: it is a hard code-level barrier.
+    #
+    # Rule 1 — apply_file_path MUST match file_path_for_fix (the path whose
+    #   content was fetched and injected into the fix-engineer prompt).  A
+    #   mismatch means the fix-engineer changed the path, which is almost always
+    #   hallucination.
+    if file_path_for_fix is not None and apply_file_path != file_path_for_fix:
+        logger.error(
+            "fix-engineer returned a different path than the one extracted from "
+            "the RCA (expected=%r, got=%r) — refusing to apply a patch to an "
+            "unverified path.",
+            file_path_for_fix,
+            apply_file_path,
+        )
+        return 1
+
+    # Rule 2 — apply_file_path MUST exist in base_branch.  Re-use
+    #   fetch_file_content; a 404 / exception means the file does not exist.
+    try:
+        fetch_file_content(
+            repo=repo,
+            token=github_token,
+            path=apply_file_path,
+            ref=base_branch,
+        )
+    except Exception:
+        logger.error(
+            "fix-engineer targeted a path that does not exist on base branch: "
+            "%s — refusing to create a hallucinated file",
+            apply_file_path,
         )
         return 1
 

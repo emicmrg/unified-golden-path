@@ -8,6 +8,110 @@ from __future__ import annotations
 
 import re
 
+# Sentinel values that indicate "no specific file" in the RCA output
+_NO_FILE_SENTINELS = frozenset({"N/A", "NA", "UNKNOWN", "(MULTIPLE FILES)", "MULTIPLE FILES"})
+
+
+def extract_file_path(analyze_output: str) -> str | None:
+    """Extract the file path from a FILE: field in the log-analyst RCA output.
+
+    Tolerates the many Markdown variations that LLMs produce:
+      - List prefixes: ``-``, ``*``, ``1.``, ``2.`` etc.
+      - Emphasis around the keyword: ``**FILE**:``, ``**FILE:**``, ``_FILE_:``
+      - Backtick-quoted values: ``FILE: `sample-service/src/coldChain.ts```
+      - Line-number suffix: ``FILE: path/to/file.ts:81``  → strips ``:81``
+
+    Returns:
+        The normalised file path, or ``None`` if:
+        - No ``FILE:`` field is found.
+        - The value is a sentinel like ``N/A``, ``NA``, ``UNKNOWN``,
+          ``(multiple files)``, or empty after stripping.
+
+    Examples::
+
+        >>> extract_file_path("- FILE: sample-service/src/coldChain.ts")
+        'sample-service/src/coldChain.ts'
+        >>> extract_file_path("- **FILE**: sample-service/src/coldChain.ts")
+        'sample-service/src/coldChain.ts'
+        >>> extract_file_path("FILE: `sample-service/src/coldChain.ts`")
+        'sample-service/src/coldChain.ts'
+        >>> extract_file_path("FILE: sample-service/src/coldChain.ts:81")
+        'sample-service/src/coldChain.ts'
+        >>> extract_file_path("- FILE: N/A")  # returns None
+        >>> extract_file_path("no file field here")  # returns None
+    """
+    # Pattern breakdown:
+    #   ^[ \t]*           — optional leading whitespace (start of line)
+    #   (?:[-*]|\d+[.)]) ? — optional list marker: -, *, 1. 2) etc.
+    #   [ \t]*            — optional space after marker
+    #   (?:[*_]{1,2})?    — optional opening emphasis (**, *, _, __)
+    #   FILE              — literal keyword (case-insensitive via re.I)
+    #   (?:[*_]{1,2})?    — optional closing emphasis
+    #   :?                — optional colon that may be INSIDE the emphasis
+    #   [ \t]*            — optional whitespace before the colon
+    #   :                 — mandatory colon (when not inside the emphasis markers)
+    #   [ \t]*            — optional whitespace after the colon
+    #   (`?)              — optional opening backtick (group 1)
+    #   (.+?)             — the raw path value (group 2)
+    # Pattern: handles all real Markdown variants the LLM produces.
+    #
+    # The tricky case is "**FILE:**" where the colon is INSIDE the closing
+    # emphasis markers.  We use two alternation branches, with the MORE
+    # SPECIFIC branch first so the regex engine picks it when both could match:
+    #
+    #   Branch B (first) — colon INSIDE emphasis:  **FILE:**  or  _FILE:_
+    #   Branch A (second) — colon OUTSIDE emphasis:  **FILE**:  or  FILE:
+    #
+    # Each branch then allows optional whitespace, an optional backtick pair,
+    # and captures the path value.
+    pattern = re.compile(
+        r"(?:^|(?<=\n))"                      # line start (zero-width)
+        r"[ \t]*"                              # optional indent
+        r"(?:[-*]|\d+[.)])?[ \t]*"            # optional list marker
+        r"(?:"
+            # Branch B (specific): colon INSIDE the closing emphasis
+            # e.g. **FILE:** or _FILE:_
+            r"(?:[*_]{1,2})FILE:(?:[*_]{1,2})"
+            r"|"
+            # Branch A (generic): colon OUTSIDE emphasis
+            # e.g. **FILE**: or _FILE_: or plain FILE:
+            r"(?:[*_]{1,2})?FILE(?:[*_]{1,2})?[ \t]*:"
+        r")"
+        r"[ \t]*"                              # optional space after colon
+        r"(`?)"                                # group 1: optional opening backtick
+        r"(.+?)"                               # group 2: raw path value (non-greedy)
+        r"\1"                                  # matching closing backtick
+        r"[ \t]*(?:$|\n)",                     # end of line
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    m = pattern.search(analyze_output)
+    if not m:
+        return None
+
+    raw_value = m.group(2).strip()
+    if not raw_value:
+        return None
+
+    # Strip a trailing :<number> or :<number>-<number> line-reference suffix.
+    # We only strip a purely numeric suffix so we don't mangle paths that
+    # legitimately contain colons (rare but possible in URL-like paths).
+    path_candidate = re.sub(r":\d[\d\-]*$", "", raw_value)
+
+    # Reject sentinel values
+    if path_candidate.upper() in _NO_FILE_SENTINELS:
+        return None
+
+    # Reject parenthesised values like "(multiple files)" — starts with "("
+    if path_candidate.startswith("("):
+        return None
+
+    # A plausible file path must contain at least one "/" or "."
+    if "/" not in path_candidate and "." not in path_candidate:
+        return None
+
+    return path_candidate
+
 
 def parse_verdict(review_output: str) -> tuple[str, str]:
     """Extracts the structured verdict from the reviewer's output.

@@ -1,251 +1,410 @@
 """
-Unit tests for FILE field extraction from RCA output (defect #2).
+Unit tests for ``crew.verdict.extract_file_path`` and the D2 path-existence
+guard added to ``crew.main``.
 
-Tests the logic in crew/main.py that extracts the FILE: <path[:line]> field
-from the analyze-phase RCA output and handles edge cases like N/A, unknown,
-and path:line format parsing.
+Defect 1 (core) — Robust FILE field extraction
+================================================
+Covers ALL real Markdown formats the LLM produces, plus sentinel values and
+edge cases that must return ``None``.
 
-This isolates the regex-based parsing logic that is embedded in main.py's
-orchestration loop, allowing it to be tested without running the full
-CrewAI pipeline.
+Defect 2 (guard) — Deterministic path-existence barrier
+=========================================================
+Verifies that ``crew.main.run()`` returns 1 (without creating a branch)
+when the fix-engineer targets a file that does not exist on the base branch,
+and when the fix-engineer path differs from the RCA-extracted path.
 """
 
 from __future__ import annotations
 
-import re
+import sys
+import types
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from crew.verdict import extract_file_path
+
+# ─── crewai stub (same as in test_robustness_guards.py) ──────────────────────
+
+def _install_crewai_stub() -> None:
+    if "crewai" in sys.modules:
+        return
+
+    crewai_stub = types.ModuleType("crewai")
+
+    class _FakeTask:
+        def __init__(self, description="", expected_output="", agent=None, context=None):
+            self.description = description
+            self.expected_output = expected_output
+            self.agent = agent
+            self.context = context or []
+            self.output = None
+
+    class _FakeAgent:
+        def __init__(self, *args, **kwargs): pass
+
+    class _FakeLLM:
+        def __init__(self, *args, **kwargs): pass
+
+    class _FakeProcess:
+        sequential = "sequential"
+
+    class _FakeCrew:
+        def __init__(self, agents=None, tasks=None, process=None, verbose=False):
+            self.agents = agents or []
+            self.tasks = tasks or []
+        def kickoff(self): return ""
+
+    crewai_stub.Task = _FakeTask
+    crewai_stub.Agent = _FakeAgent
+    crewai_stub.LLM = _FakeLLM
+    crewai_stub.Process = _FakeProcess
+    crewai_stub.Crew = _FakeCrew
+
+    sys.modules["crewai"] = crewai_stub
+    for sub in ["crewai.agent", "crewai.task", "crewai.crew", "crewai.process"]:
+        sys.modules[sub] = crewai_stub
 
 
-def extract_file_path_from_rca(rca_output: str) -> str | None:
-    """Extract the file path from a FILE: <path[:line]> field in RCA output.
+_install_crewai_stub()
 
-    This mirrors the logic in crew/main.py, extracting and normalizing the FILE field.
+import crew.main  # noqa: E402 (after sys.modules manipulation)
 
-    Args:
-        rca_output: Full RCA diagnosis output from log-analyst.
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEFECTO 1 — extract_file_path: tabla de formatos Markdown
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    Returns:
-        Extracted file path (without line number), or None if:
-        - No FILE field is found
-        - FILE value is N/A, NA, UNKNOWN, etc.
-        - FILE value is empty after stripping
-    """
-    file_field_match = re.search(
-        r"(?:^|\n)\s*-?\s*FILE:\s*(.+?)(?:\s*$|\n)",
-        rca_output,
-        re.IGNORECASE,
+
+class TestExtractFilePathMarkdownFormats:
+    """Verifica todos los formatos reales que el LLM emite para el campo FILE."""
+
+    # ── Formatos que DEBEN matchear ────────────────────────────────────────────
+
+    @pytest.mark.parametrize(
+        "rca_line, expected",
+        [
+            # Plano (ya funcionaba)
+            (
+                "- FILE: sample-service/src/coldChain.ts",
+                "sample-service/src/coldChain.ts",
+            ),
+            # Énfasis en la clave: **FILE**:
+            (
+                "- **FILE**: sample-service/src/coldChain.ts",
+                "sample-service/src/coldChain.ts",
+            ),
+            # Énfasis + colon dentro: **FILE:**
+            (
+                "- **FILE:** sample-service/src/coldChain.ts",
+                "sample-service/src/coldChain.ts",
+            ),
+            # Marcador * en vez de -
+            (
+                "* FILE: sample-service/src/coldChain.ts",
+                "sample-service/src/coldChain.ts",
+            ),
+            # Marcador numérico
+            (
+                "2. FILE: sample-service/src/coldChain.ts",
+                "sample-service/src/coldChain.ts",
+            ),
+            # Valor entre backticks (deben removerse)
+            (
+                "FILE: `sample-service/src/coldChain.ts`",
+                "sample-service/src/coldChain.ts",
+            ),
+            # Con sufijo :línea (debe quedar sólo el path)
+            (
+                "FILE: sample-service/src/coldChain.ts:81",
+                "sample-service/src/coldChain.ts",
+            ),
+        ],
     )
-    if not file_field_match:
-        return None
+    def test_formatos_que_deben_matchear(self, rca_line: str, expected: str) -> None:
+        """Todos los formatos reales de producción deben extraer el path correcto."""
+        result = extract_file_path(rca_line + "\n")
+        assert result == expected, (
+            f"Formato '{rca_line!r}' → esperado {expected!r}, obtenido {result!r}"
+        )
 
-    raw_file_field = file_field_match.group(1).strip()
+    # ── Formatos que deben dar None ────────────────────────────────────────────
 
-    # Strip line number suffix (e.g. "sample-service/src/coldChain.ts:42" → path only)
-    candidate_path = raw_file_field.split(":")[0].strip()
+    @pytest.mark.parametrize(
+        "rca_line",
+        [
+            # N/A explícito
+            "- FILE: N/A",
+            # Valor entre paréntesis (múltiples archivos)
+            "FILE: (multiple files)",
+            # Ausencia del campo (sin FILE:)
+            "- SEVERITY: High\n- ROOT_CAUSE: null pointer",
+        ],
+    )
+    def test_formatos_sin_archivo(self, rca_line: str) -> None:
+        """Sentineles y ausencia del campo deben devolver None."""
+        result = extract_file_path(rca_line + "\n")
+        assert result is None, (
+            f"Formato '{rca_line!r}' debería devolver None, pero devolvió {result!r}"
+        )
 
-    # Filter out N/A, NA, UNKNOWN, etc.
-    if candidate_path and candidate_path.upper() not in ("N/A", "NA", "UNKNOWN"):
-        return candidate_path
+    # ── Casos adicionales de robustez ─────────────────────────────────────────
 
-    return None
+    def test_plano_sin_guion(self) -> None:
+        """Sin marcador de lista: 'FILE: path' debe funcionar."""
+        assert extract_file_path("FILE: sample-service/src/coldChain.ts\n") == (
+            "sample-service/src/coldChain.ts"
+        )
 
+    def test_path_con_punto_simple(self) -> None:
+        """Extensión .ts correctamente conservada."""
+        assert extract_file_path("- FILE: src/index.ts\n") == "src/index.ts"
 
-class TestExtractFilePathFromRCA:
-    """Tests for FILE field extraction from RCA output."""
+    def test_sufijo_linea_removido(self) -> None:
+        """':81' al final NO debe aparecer en el resultado."""
+        result = extract_file_path("FILE: sample-service/src/coldChain.ts:81\n")
+        assert result is not None
+        assert ":81" not in result
 
-    def test_extracts_simple_file_path(self) -> None:
-        """Should extract a simple file path from FILE: field."""
-        rca_output = (
+    def test_backticks_removidos_del_valor(self) -> None:
+        """Los backticks envolventes deben eliminarse del path capturado."""
+        result = extract_file_path("FILE: `sample-service/src/coldChain.ts`\n")
+        assert result is not None
+        assert "`" not in result
+
+    def test_na_lowercase(self) -> None:
+        """'n/a' en minúsculas también debe devolver None."""
+        assert extract_file_path("- FILE: n/a\n") is None
+
+    def test_unknown_sentinel(self) -> None:
+        """'UNKNOWN' debe devolver None."""
+        assert extract_file_path("- FILE: UNKNOWN\n") is None
+
+    def test_path_profundo(self) -> None:
+        """Path anidado profundo debe extraerse completo."""
+        rca = "- FILE: packages/my-pkg/src/deep/nested/file.ts:10\n"
+        assert extract_file_path(rca) == "packages/my-pkg/src/deep/nested/file.ts"
+
+    def test_path_con_guion_en_nombre(self) -> None:
+        """Nombres de archivo con guiones deben conservarse."""
+        assert extract_file_path("- FILE: sample-service/src/cold-chain.ts\n") == (
+            "sample-service/src/cold-chain.ts"
+        )
+
+    def test_case_insensitive_keyword(self) -> None:
+        """El keyword 'file' (minúsculas) también debe funcionar."""
+        assert extract_file_path("- file: sample-service/src/coldChain.ts\n") == (
+            "sample-service/src/coldChain.ts"
+        )
+
+    def test_multilinea_extrae_primera_ocurrencia(self) -> None:
+        """Con múltiples líneas FILE: se usa la primera (re.search)."""
+        rca = (
+            "- FILE: first-file.ts\n"
+            "- FILE: second-file.ts\n"
+        )
+        assert extract_file_path(rca) == "first-file.ts"
+
+    def test_contexto_completo_rca(self) -> None:
+        """Extrae correctamente con el contexto completo de un RCA real."""
+        rca = (
             "Root Cause Analysis:\n"
-            "- ISSUE: Type error in coldChain.ts\n"
+            "- ERROR_TYPE: TypeError\n"
             "- FILE: sample-service/src/coldChain.ts\n"
+            "- ROOT_CAUSE: wrong return type\n"
             "- SEVERITY: High\n"
         )
-        result = extract_file_path_from_rca(rca_output)
+        assert extract_file_path(rca) == "sample-service/src/coldChain.ts"
+
+    def test_bold_file_with_colon_and_line(self) -> None:
+        """**FILE:** con sufijo de línea → path limpio."""
+        rca = "- **FILE:** sample-service/src/coldChain.ts:42\n"
+        result = extract_file_path(rca)
         assert result == "sample-service/src/coldChain.ts"
 
-    def test_extracts_path_with_line_number(self) -> None:
-        """Should extract path and strip the line number suffix."""
-        rca_output = (
-            "- FILE: sample-service/src/coldChain.ts:42\n"
-            "- CONTEXT: function validateTemperature\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
-        assert result == "sample-service/src/coldChain.ts"
-        # Verify line number was stripped (not included in result)
-        assert ":42" not in result
+    def test_asterisk_list_marker(self) -> None:
+        """'* FILE:' con marcador asterisco."""
+        assert extract_file_path("* FILE: src/app.ts\n") == "src/app.ts"
 
-    def test_returns_none_for_file_na(self) -> None:
-        """FILE: N/A should return None (no specific file to fix)."""
-        rca_output = (
-            "- ISSUE: Generic CI failure\n"
-            "- FILE: N/A\n"
-            "- DIAGNOSIS: Check logs manually\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
-        assert result is None
+    def test_numeric_list_marker(self) -> None:
+        """'1. FILE:' con marcador numérico."""
+        assert extract_file_path("1. FILE: src/app.ts\n") == "src/app.ts"
 
-    def test_returns_none_for_file_na_lowercase(self) -> None:
-        """FILE: n/a (lowercase) should also return None."""
-        rca_output = (
-            "- ISSUE: Generic CI failure\n"
-            "- FILE: n/a\n"
-            "- DIAGNOSIS: Check logs\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
-        assert result is None
-
-    def test_returns_none_for_file_na_no_slash(self) -> None:
-        """FILE: NA (without slash) should also return None."""
-        rca_output = (
-            "- ISSUE: Generic CI failure\n"
-            "- FILE: NA\n"
-            "- DIAGNOSIS: Check logs\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
-        assert result is None
-
-    def test_returns_none_for_file_unknown(self) -> None:
-        """FILE: UNKNOWN should return None."""
-        rca_output = (
-            "- ISSUE: CI failure\n"
-            "- FILE: UNKNOWN\n"
-            "- DIAGNOSIS: Cannot determine affected file\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
-        assert result is None
-
-    def test_returns_none_when_no_file_field(self) -> None:
-        """If no FILE: field is present, should return None."""
-        rca_output = (
-            "- ISSUE: CI failure\n"
-            "- SEVERITY: High\n"
-            "- DIAGNOSIS: Check the logs\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
-        assert result is None
-
-    def test_returns_none_for_empty_file_value(self) -> None:
-        """FILE: with empty value followed by newline.
-        
-        NOTE: Due to regex behavior, an empty FILE field followed by a dash-line
-        may capture that next line. This is a known limitation of the regex.
-        For now, this test documents current behavior.
-        """
-        rca_output = (
-            "- ISSUE: CI failure\n"
-            "- FILE: \n"
-            "- DIAGNOSIS: Empty value\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
-        # Current regex behavior: with a space after FILE:, it may capture the next line
-        # This is not ideal, but it's the current implementation.
-        # The actual code in main.py handles this by checking if the path is empty
-        # or if it matches "N/A", "NA", "UNKNOWN".
-        # For now, accept that an empty FILE may cause issues. A better regex 
-        # would be needed to fix this properly.
-        assert result is None or result.startswith("-")
-
-    def test_handles_file_field_without_dash(self) -> None:
-        """Should handle FILE: field even if list marker (-) is absent."""
-        rca_output = (
-            "Root Cause Analysis:\n"
-            "FILE: sample-service/src/coldChain.ts\n"
-            "SEVERITY: High\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
-        assert result == "sample-service/src/coldChain.ts"
-
-    def test_handles_file_field_with_extra_whitespace(self) -> None:
-        """Should strip extra whitespace around the FILE value."""
-        rca_output = (
-            "- FILE:    sample-service/src/coldChain.ts   \n"
-            "- CONTEXT: Something\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
-        assert result == "sample-service/src/coldChain.ts"
-
-    def test_case_insensitive_file_keyword(self) -> None:
-        """FILE: keyword match should be case-insensitive."""
-        rca_output = (
-            "- file: sample-service/src/coldChain.ts\n"
-            "- Context: Something\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
-        assert result == "sample-service/src/coldChain.ts"
-
-    def test_case_insensitive_na_check(self) -> None:
-        """N/A value should be case-insensitive even in mixed case."""
-        rca_output = (
-            "- FILE: N/a\n"
-            "- Context: Generic\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
-        assert result is None
-
-    def test_extracts_nested_path(self) -> None:
-        """Should handle deeply nested file paths."""
-        rca_output = (
-            "- FILE: packages/my-pkg/src/deep/nested/file.ts:10\n"
-            "- DIAGNOSIS: Type error\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
-        assert result == "packages/my-pkg/src/deep/nested/file.ts"
-
-    def test_extracts_multiple_extensions(self) -> None:
-        """Should preserve file extensions (not strip them)."""
-        rca_output = (
-            "- FILE: sample-service/src/config.test.ts\n"
-            "- DIAGNOSIS: Test failure\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
-        assert result == "sample-service/src/config.test.ts"
-
-    def test_handles_line_number_with_range(self) -> None:
-        """If line field contains non-numeric characters after :, they are stripped."""
-        rca_output = (
-            "- FILE: src/file.ts:42-50\n"
-            "- DIAGNOSIS: Multi-line issue\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
+    def test_rango_lineas_removido(self) -> None:
+        """':42-50' sufijo de rango de líneas debe removerse."""
+        result = extract_file_path("- FILE: src/file.ts:42-50\n")
         assert result == "src/file.ts"
 
-    def test_matches_first_file_field_only(self) -> None:
-        """If multiple FILE: fields exist, should match the first one (re.search behavior)."""
-        rca_output = (
-            "- FILE: first-file.ts\n"
-            "- RELATED: second-file.ts\n"
-            "- FILE: third-file.ts\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
-        assert result == "first-file.ts"
 
-    def test_path_with_dots_in_name(self) -> None:
-        """Should preserve dots in file names (e.g., for versions)."""
-        rca_output = (
-            "- FILE: src/package.2.0.ts\n"
-            "- DIAGNOSIS: Something\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
-        assert result == "src/package.2.0.ts"
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEFECTO 2 — Guard D2: barrera determinista de ruta inexistente
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    def test_line_number_with_colon_in_filename(self) -> None:
-        """Line number is split on FIRST colon only; colons before line# are kept."""
-        # Note: This is a realistic edge case - the implementation splits on the first ":",
-        # so only the part AFTER the first colon is treated as line number.
-        # A file named "old:syntax.ts" would be misunderstood as "old" with line "syntax.ts".
-        # But this is an unrealistic filename in practice.
-        rca_output = (
-            "- FILE: src/normalfile.ts:42\n"
-            "- DIAGNOSIS: Something\n"
-        )
-        result = extract_file_path_from_rca(rca_output)
-        assert result == "src/normalfile.ts"
+_MINIMAL_RCA = (
+    "- ERROR_TYPE: TypeError\n"
+    "- FILE: sample-service/src/coldChain.ts\n"
+    "- ROOT_CAUSE: wrong return type\n"
+    "- CONTEXT: TypeError: string is not assignable to number\n"
+    "- SUGGESTED_ACTION: fix return type annotation\n"
+)
 
-    def test_file_with_url_like_format(self) -> None:
-        """Should handle file paths that might look like URLs or have slashes."""
-        rca_output = (
-            "- FILE: @scope/package/src/index.ts\n"
-            "- DIAGNOSIS: Module not found\n"
+_VALID_FIX_CORRECT_PATH = (
+    "FILE_PATH: sample-service/src/coldChain.ts\n"
+    "<<<FILE_CONTENT>>>\n"
+    "const x: number = 1;\n"
+    "<<<END_FILE_CONTENT>>>\n"
+    "JUSTIFICATION: Fixes the return type.\n"
+    "MODIFIED_FILES: sample-service/src/coldChain.ts\n"
+)
+
+_VALID_FIX_HALLUCINATED_PATH = (
+    # fix-engineer devuelve una ruta que NO coincide con el FILE del RCA
+    "FILE_PATH: src/coldChain.ts\n"
+    "<<<FILE_CONTENT>>>\n"
+    "const x: number = 1;\n"
+    "<<<END_FILE_CONTENT>>>\n"
+    "JUSTIFICATION: Fixes the return type.\n"
+    "MODIFIED_FILES: src/coldChain.ts\n"
+)
+
+_APPLY_VERDICT = "Patch looks correct.\nVERDICT: APPLY"
+
+
+def _make_settings() -> MagicMock:
+    s = MagicMock()
+    s.github_repo = "org/repo"
+    s.ddb_table_name = "ugp-test"
+    s.max_attempts = 3
+    s.aws_region = "us-east-1"
+    s.github_token_secret_arn = "arn:aws:secretsmanager:us-east-1:123:secret/tok"
+    return s
+
+
+def _make_cb(allowed: bool = True) -> MagicMock:
+    cb = MagicMock()
+    cb.is_escalated.return_value = False
+    cb.check_and_increment.return_value = SimpleNamespace(
+        allowed=allowed, attempt_number=1, max_attempts=3
+    )
+    return cb
+
+
+def _make_task_output(raw: str) -> SimpleNamespace:
+    return SimpleNamespace(raw=raw)
+
+
+def _make_mock_task(raw: str) -> MagicMock:
+    t = MagicMock()
+    t.output = _make_task_output(raw)
+    return t
+
+
+def _invoke_run_d2(
+    fix_output_raw: str,
+    review_output_raw: str = _APPLY_VERDICT,
+    fetch_side_effect: Exception | None = None,
+) -> tuple[int, MagicMock]:
+    """Runs crew.main.run() with external deps mocked; returns (exit_code, mock_create)."""
+    analyze_task_mock = _make_mock_task(_MINIMAL_RCA)
+    fix_task_mock = _make_mock_task(fix_output_raw)
+    review_task_mock = _make_mock_task(review_output_raw)
+
+    mock_create = MagicMock(return_value="fix/selfheal-run-42-1")
+    mock_pr = MagicMock(return_value="https://github.com/org/repo/pull/1")
+
+    # fetch_file_content call sequence:
+    #   call 1 — fetching real content for FILE field (returns "old content")
+    #   call 2 — D2 guard verification (raises or returns "old content")
+    if fetch_side_effect is not None:
+        fetch_responses = [
+            "old content",   # call 1: fetch for injection (succeeds)
+            fetch_side_effect,  # call 2: D2 guard verification (404 / error)
+        ]
+
+        def _fetch_side_effect(*args, **kwargs):
+            resp = fetch_responses.pop(0)
+            if isinstance(resp, Exception):
+                raise resp
+            return resp
+
+        fetch_mock = MagicMock(side_effect=_fetch_side_effect)
+    else:
+        # Both calls succeed
+        fetch_mock = MagicMock(return_value="old content")
+
+    with (
+        patch("crew.main.get_settings", return_value=_make_settings()),
+        patch("crew.main.CircuitBreaker", return_value=_make_cb()),
+        patch("crew.main.get_github_token", return_value="ghp_test"),
+        patch("crew.main.fetch_ci_log", return_value="some ci log"),
+        patch(
+            "crew.main.build_tasks",
+            side_effect=[
+                (analyze_task_mock, MagicMock(), MagicMock()),
+                (MagicMock(), fix_task_mock, review_task_mock),
+            ],
+        ),
+        patch(
+            "crew.main.build_agents",
+            return_value=(MagicMock(), MagicMock(), MagicMock()),
+        ),
+        patch("crew.main.Crew") as mock_crew_cls,
+        patch("crew.main.fetch_file_content", fetch_mock),
+        patch("crew.main.create_branch_and_commit", mock_create),
+        patch("crew.main.open_pull_request", mock_pr),
+    ):
+        mock_crew_cls.return_value.kickoff.return_value = review_output_raw
+        exit_code = crew.main.run(["--run-id", "run-42"])
+
+    return exit_code, mock_create
+
+
+class TestD2PathExistenceGuard:
+    """D2 — barrera determinista de ruta inexistente antes de create_branch_and_commit."""
+
+    def test_apply_con_ruta_valida_procede(self) -> None:
+        """APPLY + ruta coincide con RCA + archivo existe en base → exit 0."""
+        exit_code, mock_create = _invoke_run_d2(fix_output_raw=_VALID_FIX_CORRECT_PATH)
+        assert exit_code == 0
+        mock_create.assert_called_once()
+
+    def test_apply_ruta_no_existe_en_base_retorna_1(self) -> None:
+        """APPLY + archivo NO existe en base_branch → return 1, sin crear rama."""
+        exit_code, mock_create = _invoke_run_d2(
+            fix_output_raw=_VALID_FIX_CORRECT_PATH,
+            fetch_side_effect=Exception("404 Not Found"),
         )
-        result = extract_file_path_from_rca(rca_output)
-        assert result == "@scope/package/src/index.ts"
+        assert exit_code == 1
+        mock_create.assert_not_called()
+
+    def test_apply_ruta_no_existe_no_crea_archivo(self) -> None:
+        """Cuando el archivo no existe, el guard debe impedir la creación del archivo."""
+        exit_code, mock_create = _invoke_run_d2(
+            fix_output_raw=_VALID_FIX_CORRECT_PATH,
+            fetch_side_effect=FileNotFoundError("404"),
+        )
+        assert exit_code == 1
+        mock_create.assert_not_called()
+
+    def test_apply_path_mismatch_retorna_1(self) -> None:
+        """fix-engineer devuelve path distinto al del RCA → return 1, sin crear rama."""
+        # _VALID_FIX_HALLUCINATED_PATH tiene FILE_PATH: src/coldChain.ts
+        # pero el RCA dice sample-service/src/coldChain.ts → mismatch
+        exit_code, mock_create = _invoke_run_d2(
+            fix_output_raw=_VALID_FIX_HALLUCINATED_PATH
+        )
+        assert exit_code == 1
+        mock_create.assert_not_called()
+
+    def test_path_mismatch_no_crea_archivo(self) -> None:
+        """El mismatch de path NO debe crear ningún archivo en el repo."""
+        _, mock_create = _invoke_run_d2(fix_output_raw=_VALID_FIX_HALLUCINATED_PATH)
+        mock_create.assert_not_called()
+
+    def test_guard_dispara_antes_de_branch_creation(self) -> None:
+        """create_branch_and_commit no se llama cuando D2 rechaza."""
+        _, mock_create = _invoke_run_d2(
+            fix_output_raw=_VALID_FIX_CORRECT_PATH,
+            fetch_side_effect=Exception("404"),
+        )
+        mock_create.assert_not_called()

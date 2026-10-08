@@ -371,12 +371,16 @@ class TestN2PatchImpossibleIntegration:
         assert _invoke_run(fix_output_raw=_VALID_FIX_OUTPUT) == 0
 
     def test_partial_patch_text_does_not_trigger(self) -> None:
-        """Text containing 'PATCH' but not 'PATCH_IMPOSSIBLE' must not trigger N2."""
+        """Text containing 'PATCH' but not 'PATCH_IMPOSSIBLE' must not trigger N2.
+
+        The fix path MUST match the FILE field in _MINIMAL_RCA so that the D2
+        path-existence guard does not fire independently of the N2 check.
+        """
         fix_output = (
-            "FILE_PATH: src/foo.ts\n"
+            "FILE_PATH: sample-service/src/coldChain.ts\n"
             "<<<FILE_CONTENT>>>\nconst x = 1;\n<<<END_FILE_CONTENT>>>\n"
             "JUSTIFICATION: This patch is not impossible.\n"
-            "MODIFIED_FILES: src/foo.ts\n"
+            "MODIFIED_FILES: sample-service/src/coldChain.ts\n"
         )
         assert _invoke_run(fix_output_raw=fix_output) == 0
 
@@ -449,3 +453,126 @@ class TestB1RcaInjectedIntoDescriptions:
         rca = "UNIQUE_MARKER_67890: another test"
         desc = _build_review_description("org/repo", rca_summary=rca)
         assert "UNIQUE_MARKER_67890: another test" in desc
+
+
+# ─── #9: No FILE in RCA → fail-closed (regression test for field-mode flaw) ──
+
+
+# RCA sin campo FILE (el log-analyst no identificó un archivo concreto).
+# Reproduce el escenario de campo real: un diagnóstico ambiguo donde el
+# log-analyst emite N/A o directamente omite el campo FILE.
+_RCA_WITHOUT_FILE = (
+    "- ERROR_TYPE: TypeError\n"
+    "- FILE: N/A\n"
+    "- ROOT_CAUSE: unresolved external dependency\n"
+    "- CONTEXT: Cannot determine the exact source file\n"
+    "- SUGGESTED_ACTION: manual investigation required\n"
+)
+
+# El fix-engineer alucina un FILE_PATH (aunque no fue provisto en el contexto).
+_HALLUCINATED_FIX_OUTPUT = (
+    "FILE_PATH: sample-service/src/hallucinated.ts\n"
+    "<<<FILE_CONTENT>>>\n"
+    "const x: number = 42;\n"
+    "<<<END_FILE_CONTENT>>>\n"
+    "JUSTIFICATION: Fixes the issue by changing x to 42.\n"
+    "MODIFIED_FILES: sample-service/src/hallucinated.ts\n"
+)
+
+# El reviewer alucina APPLY (en lugar de rechazar correctamente).
+_HALLUCINATED_APPLY_VERDICT = "Patch looks fine to me.\nVERDICT: APPLY"
+
+
+class TestNoFileInRcaFailClosed:
+    """#9 regression: RCA sin FILE → file_path_for_fix=None → exit==1 y sin commit.
+
+    Reproduce el fallo de producción exacto:
+      1. RCA sin campo FILE concreto (o con FILE: N/A) → extract_file_path devuelve None.
+      2. El fix-engineer devuelve un FILE_PATH inventado.
+      3. El reviewer alucina APPLY.
+      4. El resultado DEBE ser exit==1 y create_branch_and_commit NO debe llamarse.
+    """
+
+    def _invoke_no_file_rca(
+        self,
+        rca_raw: str = _RCA_WITHOUT_FILE,
+        fix_raw: str = _HALLUCINATED_FIX_OUTPUT,
+        review_raw: str = _HALLUCINATED_APPLY_VERDICT,
+    ) -> tuple[int, MagicMock]:
+        """Runs crew.main.run() with a no-FILE RCA and returns (exit_code, mock_create)."""
+        analyze_task_mock = _make_mock_task(rca_raw)
+        fix_task_mock = _make_mock_task(fix_raw)
+        review_task_mock = _make_mock_task(review_raw)
+
+        with (
+            patch("crew.main.get_settings", return_value=_make_settings()),
+            patch("crew.main.CircuitBreaker", return_value=_make_cb()),
+            patch("crew.main.get_github_token", return_value="ghp_test"),
+            patch("crew.main.fetch_ci_log", return_value="some ci log"),
+            patch(
+                "crew.main.build_tasks",
+                side_effect=[
+                    # Phase 1: analyze only
+                    (analyze_task_mock, MagicMock(), MagicMock()),
+                    # Phase 2: fix + review
+                    (MagicMock(), fix_task_mock, review_task_mock),
+                ],
+            ),
+            patch(
+                "crew.main.build_agents",
+                return_value=(MagicMock(), MagicMock(), MagicMock()),
+            ),
+            patch("crew.main.Crew") as mock_crew_cls,
+            patch("crew.main.fetch_file_content", return_value="old content"),
+            patch("crew.main.create_branch_and_commit") as mock_create,
+            patch("crew.main.open_pull_request") as mock_pr,
+        ):
+            mock_crew_cls.return_value.kickoff.return_value = review_raw
+            exit_code = crew.main.run(["--run-id", "run-99"])
+
+        return exit_code, mock_create
+
+    def test_no_file_in_rca_returns_1(self) -> None:
+        """RCA con FILE: N/A → file_path_for_fix=None → run() must return 1."""
+        exit_code, _ = self._invoke_no_file_rca()
+        assert exit_code == 1
+
+    def test_no_file_in_rca_create_branch_not_called(self) -> None:
+        """RCA con FILE: N/A → create_branch_and_commit must NOT be called."""
+        _, mock_create = self._invoke_no_file_rca()
+        mock_create.assert_not_called()
+
+    def test_rca_missing_file_field_entirely_returns_1(self) -> None:
+        """RCA without any FILE field → file_path_for_fix=None → run() must return 1."""
+        rca_no_file_field = (
+            "- ERROR_TYPE: TypeError\n"
+            "- ROOT_CAUSE: unresolved external dependency\n"
+            "- CONTEXT: Cannot determine the exact source file\n"
+            "- SUGGESTED_ACTION: manual investigation required\n"
+        )
+        exit_code, mock_create = self._invoke_no_file_rca(rca_raw=rca_no_file_field)
+        assert exit_code == 1
+        mock_create.assert_not_called()
+
+    def test_rca_file_na_variant_returns_1(self) -> None:
+        """RCA with 'FILE: NA' (no slash) → file_path_for_fix=None → run() must return 1."""
+        rca_na_variant = (
+            "- ERROR_TYPE: ValueError\n"
+            "- FILE: NA\n"
+            "- ROOT_CAUSE: bad config\n"
+            "- CONTEXT: multiple files involved\n"
+            "- SUGGESTED_ACTION: manual review\n"
+        )
+        exit_code, mock_create = self._invoke_no_file_rca(rca_raw=rca_na_variant)
+        assert exit_code == 1
+        mock_create.assert_not_called()
+
+    def test_rca_with_concrete_file_proceeds_normally(self) -> None:
+        """Sanity check: RCA with a concrete FILE must NOT trigger the #9 guard."""
+        # _MINIMAL_RCA has FILE: sample-service/src/coldChain.ts → should exit 0
+        exit_code, _ = self._invoke_no_file_rca(
+            rca_raw=_MINIMAL_RCA,
+            fix_raw=_VALID_FIX_OUTPUT,
+            review_raw=_APPLY_VERDICT_OUTPUT,
+        )
+        assert exit_code == 0
