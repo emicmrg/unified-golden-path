@@ -13,10 +13,13 @@ license = { text = "MIT" }
 dependencies = [
     # Multi-role agent framework
     "crewai==0.80.0",
-    # LiteLLM embedded in crewai but pinned explicitly for the bedrock/ route
-    # 1.52.16 was yanked from PyPI; 1.53.1 is the next available release,
-    # still satisfies crewai>=1.44.22 and has the same bedrock/ provider API.
-    "litellm==1.53.1",
+    # LiteLLM is vendored by crewai but pinned explicitly here for the bedrock/ route.
+    # 1.88.6 verified: ships us.anthropic.claude-sonnet-4-5-20250929-v1:0 in its Bedrock
+    # model map (bedrock_converse, function calling) matching crew/config.py; the previous
+    # pin 1.53.1 predates Sonnet 4.5. Resolver-compatible with crewai==0.80.0 (uv lock).
+    # Also reported to mitigate SSRF advisory GHSA-3cv6-jpf6-8222 (fixed version NOT yet
+    # verified against the advisory). NOT exercised end-to-end against Bedrock yet.
+    "litellm==1.88.6",
     # AWS SDK — DynamoDB (circuit breaker), Secrets Manager (GitHub token)
     "boto3==1.35.74",
     "botocore==1.35.74",

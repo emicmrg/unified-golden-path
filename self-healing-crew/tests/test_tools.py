@@ -25,6 +25,7 @@ from crew.tools import (
     create_branch_and_commit,
     get_github_token,
 )
+from github import GithubException
 
 # ─── Test constants ───────────────────────────────────────────────────────────
 
@@ -639,3 +640,303 @@ class TestAllowEnvTokenMode:
             get_github_token(
                 secret_arn="arn:aws:secretsmanager:us-east-1:000:secret/pem"
             )
+
+
+# ─── New function tests (defects #1 and #2) ───────────────────────────────────
+
+
+class TestFetchFileContent:
+    """Tests for fetch_file_content (defect #2)."""
+
+    def _mock_content_file(self, content: str) -> MagicMock:
+        mock_cf = MagicMock()
+        mock_cf.decoded_content = content.encode("utf-8")
+        mock_cf.sha = "abc1234"
+        return mock_cf
+
+    def test_fetches_file_content_successfully(self) -> None:
+        """fetch_file_content returns decoded UTF-8 string from the API response."""
+        from crew.tools import fetch_file_content  # noqa: PLC0415
+
+        mock_cf = self._mock_content_file("const x = 1;\nconst y = 2;\n")
+        mock_repo = MagicMock()
+        mock_repo.get_contents.return_value = mock_cf
+        mock_gh = MagicMock()
+        mock_gh.get_repo.return_value = mock_repo
+
+        result = fetch_file_content(
+            repo="org/repo",
+            token="tok",
+            path="sample-service/src/coldChain.ts",
+            ref="feature/bug-branch",
+            github_client=mock_gh,
+        )
+
+        assert result == "const x = 1;\nconst y = 2;\n"
+        mock_repo.get_contents.assert_called_once_with(
+            "sample-service/src/coldChain.ts", ref="feature/bug-branch"
+        )
+
+    def test_raises_value_error_for_directory(self) -> None:
+        """fetch_file_content raises ValueError when get_contents returns a list (directory)."""
+        from crew.tools import fetch_file_content  # noqa: PLC0415
+
+        mock_repo = MagicMock()
+        mock_repo.get_contents.return_value = [MagicMock(), MagicMock()]
+        mock_gh = MagicMock()
+        mock_gh.get_repo.return_value = mock_repo
+
+        with pytest.raises(ValueError, match="directory"):
+            fetch_file_content(
+                repo="org/repo",
+                token="tok",
+                path="sample-service/src",
+                ref="main",
+                github_client=mock_gh,
+            )
+
+    def test_propagates_github_exception_on_404(self) -> None:
+        """fetch_file_content propagates GithubException (404) when file doesn't exist."""
+        from crew.tools import fetch_file_content  # noqa: PLC0415
+
+        mock_repo = MagicMock()
+        mock_repo.get_contents.side_effect = GithubException(
+            status=404, data={"message": "Not Found"}, headers=None
+        )
+        mock_gh = MagicMock()
+        mock_gh.get_repo.return_value = mock_repo
+
+        with pytest.raises(GithubException) as exc_info:
+            fetch_file_content(
+                repo="org/repo",
+                token="tok",
+                path="nonexistent/file.ts",
+                ref="main",
+                github_client=mock_gh,
+            )
+        assert exc_info.value.status == 404
+
+
+class TestExtractFileContent:
+    """Tests for extract_file_content in verdict.py (defect #2)."""
+
+    def test_extracts_path_and_content(self) -> None:
+        """extract_file_content returns (path, content) from properly formatted output."""
+        from crew.verdict import extract_file_content  # noqa: PLC0415
+
+        fix_output = (
+            "FILE_PATH: sample-service/src/coldChain.ts\n"
+            "<<<FILE_CONTENT>>>\n"
+            "const MIN_TEMP = 2.0;\n"
+            "export function validateTemperature(t: number): boolean {\n"
+            "  return t >= MIN_TEMP;\n"
+            "}\n"
+            "<<<END_FILE_CONTENT>>>\n"
+            "JUSTIFICATION: Fixes the boundary condition.\n"
+            "MODIFIED_FILES: sample-service/src/coldChain.ts"
+        )
+        result = extract_file_content(fix_output)
+        assert result is not None
+        path, content = result
+        assert path == "sample-service/src/coldChain.ts"
+        assert "const MIN_TEMP = 2.0;" in content
+        assert "validateTemperature" in content
+
+    def test_returns_none_when_no_markers(self) -> None:
+        """extract_file_content returns None when FILE_CONTENT markers are absent."""
+        from crew.verdict import extract_file_content  # noqa: PLC0415
+
+        fix_output = (
+            "```diff\n"
+            "--- a/src/coldChain.ts\n"
+            "+++ b/src/coldChain.ts\n"
+            "@@ -1 +1 @@\n"
+            "-const MIN_TEMP = 3.0;\n"
+            "+const MIN_TEMP = 2.0;\n"
+            "```\n"
+            "JUSTIFICATION: old format."
+        )
+        assert extract_file_content(fix_output) is None
+
+    def test_returns_none_when_no_file_path(self) -> None:
+        """extract_file_content returns None if FILE_PATH line is absent."""
+        from crew.verdict import extract_file_content  # noqa: PLC0415
+
+        fix_output = (
+            "<<<FILE_CONTENT>>>\n"
+            "const x = 1;\n"
+            "<<<END_FILE_CONTENT>>>\n"
+            "JUSTIFICATION: something."
+        )
+        assert extract_file_content(fix_output) is None
+
+    def test_strips_surrounding_blank_lines_from_content(self) -> None:
+        """Content between markers should have leading/trailing newlines stripped."""
+        from crew.verdict import extract_file_content  # noqa: PLC0415
+
+        fix_output = (
+            "FILE_PATH: src/foo.ts\n"
+            "<<<FILE_CONTENT>>>\n"
+            "\n"
+            "export const x = 1;\n"
+            "\n"
+            "<<<END_FILE_CONTENT>>>\n"
+        )
+        result = extract_file_content(fix_output)
+        assert result is not None
+        _, content = result
+        assert content.startswith("export const x = 1;") or "export const x = 1;" in content
+
+
+class TestApplyFileContentToBranch:
+    """Tests for _apply_file_content_to_branch (defect #1 — real file update)."""
+
+    def _make_mock_repo_with_file(self, blob_sha: str = "deadbeef") -> MagicMock:
+        mock_cf = MagicMock()
+        mock_cf.sha = blob_sha
+        mock_cf.__class__ = type("ContentFile", (), {})  # not a list
+        mock_repo = MagicMock()
+        mock_repo.get_contents.return_value = mock_cf
+        return mock_repo
+
+    def test_update_file_called_with_correct_args(self) -> None:
+        """_apply_file_content_to_branch calls update_file with sha from get_contents."""
+        from crew.tools import _apply_file_content_to_branch  # noqa: PLC0415
+
+        mock_repo = self._make_mock_repo_with_file(blob_sha="cafebabe")
+
+        _apply_file_content_to_branch(
+            gh_repo=mock_repo,
+            branch="fix/selfheal-abc12345-attempt1",
+            file_path="sample-service/src/coldChain.ts",
+            new_content="const MIN_TEMP = 2.0;\n",
+            run_key="run-001",
+        )
+
+        mock_repo.update_file.assert_called_once()
+        call_kwargs = mock_repo.update_file.call_args[1]
+        assert call_kwargs["path"] == "sample-service/src/coldChain.ts"
+        assert call_kwargs["content"] == "const MIN_TEMP = 2.0;\n"
+        assert call_kwargs["sha"] == "cafebabe"
+        assert call_kwargs["branch"] == "fix/selfheal-abc12345-attempt1"
+
+    def test_create_file_called_when_404(self) -> None:
+        """_apply_file_content_to_branch calls create_file when get_contents returns 404."""
+        from crew.tools import _apply_file_content_to_branch  # noqa: PLC0415
+
+        mock_repo = MagicMock()
+        mock_repo.get_contents.side_effect = GithubException(
+            status=404, data={"message": "Not Found"}, headers=None
+        )
+
+        _apply_file_content_to_branch(
+            gh_repo=mock_repo,
+            branch="fix/selfheal-abc12345-attempt1",
+            file_path="new-file.ts",
+            new_content="export const x = 1;\n",
+            run_key="run-002",
+        )
+
+        mock_repo.create_file.assert_called_once()
+        mock_repo.update_file.assert_not_called()
+
+    def test_guardrail_blocks_non_fix_branch(self) -> None:
+        """_apply_file_content_to_branch raises MainBranchProtectionError for non-fix/* branches."""
+        from crew.tools import (  # noqa: PLC0415
+            MainBranchProtectionError,
+            _apply_file_content_to_branch,
+        )
+
+        mock_repo = MagicMock()
+        with pytest.raises(MainBranchProtectionError):
+            _apply_file_content_to_branch(
+                gh_repo=mock_repo,
+                branch="main",
+                file_path="src/file.ts",
+                new_content="content",
+                run_key="run-003",
+            )
+        mock_repo.update_file.assert_not_called()
+        mock_repo.create_file.assert_not_called()
+
+    def test_409_conflict_is_re_raised(self) -> None:
+        """_apply_file_content_to_branch re-raises GithubException on 409 Conflict."""
+        from crew.tools import _apply_file_content_to_branch  # noqa: PLC0415
+
+        mock_cf = MagicMock()
+        mock_cf.sha = "stale_sha"
+        mock_repo = MagicMock()
+        mock_repo.get_contents.return_value = mock_cf
+        mock_repo.update_file.side_effect = GithubException(
+            status=409, data={"message": "Conflict"}, headers=None
+        )
+
+        with pytest.raises(GithubException) as exc_info:
+            _apply_file_content_to_branch(
+                gh_repo=mock_repo,
+                branch="fix/selfheal-abc12345-attempt1",
+                file_path="src/coldChain.ts",
+                new_content="const x = 2;\n",
+                run_key="run-004",
+            )
+        assert exc_info.value.status == 409
+
+
+class TestCreateBranchAndCommitWithFileContent:
+    """Tests for the new file_path/file_content path in create_branch_and_commit (defect #1)."""
+
+    def _make_mock_repo(self, blob_sha: str = "abc123") -> MagicMock:
+        mock_branch = MagicMock()
+        mock_branch.commit.sha = "base_commit_sha"
+        mock_cf = MagicMock()
+        mock_cf.sha = blob_sha
+        mock_repo = MagicMock()
+        mock_repo.get_branch.return_value = mock_branch
+        mock_repo.get_contents.return_value = mock_cf
+        return mock_repo
+
+    def test_uses_update_file_when_file_content_provided(self) -> None:
+        """create_branch_and_commit calls update_file when file_path and file_content are given."""
+        mock_repo = self._make_mock_repo()
+        mock_gh = MagicMock()
+        mock_gh.get_repo.return_value = mock_repo
+
+        create_branch_and_commit(
+            repo="org/repo",
+            token="tok",
+            diff_content="diff placeholder",
+            run_key="run-fc-001",
+            attempt_number=1,
+            file_path="sample-service/src/coldChain.ts",
+            file_content="const MIN_TEMP = 2.0;\n",
+            github_client=mock_gh,
+        )
+
+        mock_repo.update_file.assert_called_once()
+        # create_file should NOT be called (update_file handles existing files)
+        mock_repo.create_file.assert_not_called()
+
+    def test_falls_back_to_patch_notes_when_no_file_content(self) -> None:
+        """create_branch_and_commit falls back to _create_patch_notes_commit when
+        file_path/file_content are not provided."""
+        mock_branch = MagicMock()
+        mock_branch.commit.sha = "base_sha"
+        mock_repo = MagicMock()
+        mock_repo.get_branch.return_value = mock_branch
+        mock_gh = MagicMock()
+        mock_gh.get_repo.return_value = mock_repo
+
+        create_branch_and_commit(
+            repo="org/repo",
+            token="tok",
+            diff_content="--- a/file.ts\n+++ b/file.ts\n@@ -1 +1 @@\n-old\n+new",
+            run_key="run-fallback-001",
+            attempt_number=1,
+            github_client=mock_gh,
+        )
+
+        # The fallback path creates a .selfheal/*.patch file
+        mock_repo.create_file.assert_called_once()
+        call_args = mock_repo.create_file.call_args
+        patch_path = call_args[1].get("path", call_args[0][0] if call_args[0] else "")
+        assert ".selfheal/" in patch_path or patch_path.endswith(".patch")

@@ -3,8 +3,10 @@ Self-healing crew tools.
 
 Provides the functions that agents use to interact with external systems:
   - fetch_ci_log: retrieves the failed CI log (stub + GitHub Actions interface).
+  - fetch_file_content: fetches the real content of a file from a branch via PyGithub.
   - get_github_token: obtains a GitHub App installation token from Secrets Manager.
-  - create_branch_and_commit: creates a fix/* branch and applies the patch via GitHub API.
+  - create_branch_and_commit: creates a fix/* branch and applies the REAL file content
+                               via GitHub Contents API (update_file / create_file).
                                GUARANTEE: NEVER creates commits on main or master.
   - open_pull_request: opens a PR with the generated patch.
   - escalate_to_human: notifies the team that attempts have been exhausted.
@@ -16,6 +18,17 @@ ANTI-MAIN GUARDRAIL
   2. Validates that the target branch name starts with 'fix/'.
 If either validation fails it raises MainBranchProtectionError (does not continue).
 
+APPLY STRATEGY — FULL FILE CONTENT (not unified diff)
+──────────────────────────────────────────────────────
+`_apply_file_content_to_branch` uses Repository.update_file() with the complete
+corrected file content provided by the fix-engineer agent. This avoids the
+fragility of applying LLM-generated unified diffs (misaligned hunk headers,
+hallucinated context lines). A display diff is computed locally via difflib
+and included in the PR body for human review.
+
+Fallback: if no file content is available, `_create_patch_notes_commit` is
+called instead (saves a .selfheal/<run_key>.patch stub for manual review).
+
 GITHUB APP AUTHENTICATION
 ─────────────────────────
 The secret in Secrets Manager contains the PEM (GitHub App private key).
@@ -26,6 +39,7 @@ The PEM and the token are NEVER logged or printed.
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import logging
@@ -395,6 +409,60 @@ def fetch_ci_log(
         ) from exc
 
 
+# ─── Fetch file content ───────────────────────────────────────────────────────
+
+
+def fetch_file_content(
+    repo: str,
+    token: str,
+    path: str,
+    ref: str,
+    *,
+    github_client: Github | None = None,
+) -> str:
+    """Fetches the current content of a file from a branch via PyGithub get_contents.
+
+    Used to inject the real file content into the fix-engineer context, eliminating
+    hallucinated paths/variables caused by working from the CI log alone.
+
+    Args:
+        repo: Repository in 'org/repo' format.
+        token: GitHub token with contents:read permissions.
+        path: File path relative to the repository root (e.g. 'sample-service/src/coldChain.ts').
+        ref: Branch name or commit SHA to read from.
+        github_client: Injected Github client (for tests).
+
+    Returns:
+        Decoded file content as a UTF-8 string.
+
+    Raises:
+        GithubException: If the file does not exist (404) or another API error occurs.
+        ValueError: If the API returns a directory listing instead of a single file.
+    """
+    gh = github_client or Github(token)
+    gh_repo: Repository = gh.get_repo(repo)
+
+    result = gh_repo.get_contents(path, ref=ref)
+
+    # get_contents returns a list when path is a directory
+    if isinstance(result, list):
+        raise ValueError(
+            f"Path '{path}' is a directory, not a file. "
+            "Provide a path to a specific file."
+        )
+
+    # ContentFile.decoded_content is bytes; decode to str
+    content = result.decoded_content.decode("utf-8")
+    logger.debug(
+        "Fetched file content: repo=%s path=%s ref=%s size=%d chars",
+        repo,
+        path,
+        ref,
+        len(content),
+    )
+    return content
+
+
 # ─── Create branch and commit ─────────────────────────────────────────────────
 
 
@@ -448,13 +516,25 @@ def create_branch_and_commit(
     base_branch: str = "main",
     attempt_number: int = 1,
     *,
+    file_path: str | None = None,
+    file_content: str | None = None,
     github_client: Github | None = None,
 ) -> str:
-    """Creates a fix/* branch and applies the patch via GitHub API.
+    """Creates a fix/* branch and applies the fix via GitHub API.
 
     GUARDRAIL: This function NEVER writes to main or master.
     The target branch always has the format:
         fix/selfheal-<hash8>-attempt<N>
+
+    Strategy (preferred — defect #1 fix):
+      If `file_path` and `file_content` are provided, the REAL corrected file is
+      written directly using Repository.update_file() / create_file().
+      This is robust for demo because it avoids parsing LLM-generated unified diffs.
+
+    Fallback:
+      If only `diff_content` is provided (no file_path/file_content), or if the
+      file update fails, the patch is saved as .selfheal/<run_key>.patch for
+      manual review via _create_patch_notes_commit().
 
     Including attempt_number in the name guarantees that the 2nd attempt
     (and subsequent ones) use a new branch instead of colliding with the
@@ -463,13 +543,18 @@ def create_branch_and_commit(
     Args:
         repo: Repository in 'org/repo' format.
         token: GitHub token with contents:write permissions.
-        diff_content: Unified diff content to apply.
+        diff_content: Unified diff content (used as fallback / PR display diff).
         run_key: Execution key used to generate the unique branch name.
         base_branch: Base branch to fork from (default: main).
                      NOTE: base_branch is only the SOURCE of the base SHA,
                      NOT the target branch of the commit.
         attempt_number: Current attempt number (1-indexed). Included in the
                         branch name to guarantee per-attempt idempotency.
+        file_path: Repository-relative path of the file to update (e.g.
+                   'sample-service/src/coldChain.ts'). Required for the real
+                   file update strategy.
+        file_content: Complete corrected content of the file. Required for the
+                      real file update strategy.
         github_client: Injected Github client (for tests).
 
     Returns:
@@ -506,8 +591,16 @@ def create_branch_and_commit(
         gh_repo.create_git_ref(ref=f"refs/heads/{fix_branch}", sha=base_sha)
         logger.info("Branch created: %s (base SHA: %s)", fix_branch, base_sha[:8])
 
-        # Apply the diff
-        _apply_diff_to_branch(gh_repo, fix_branch, diff_content, run_key)
+        # Apply the fix — prefer full file content over diff parsing
+        if file_path and file_content is not None:
+            _apply_file_content_to_branch(
+                gh_repo, fix_branch, file_path, file_content, run_key
+            )
+        else:
+            logger.warning(
+                "file_path/file_content not provided; falling back to patch notes commit."
+            )
+            _apply_diff_to_branch(gh_repo, fix_branch, diff_content, run_key)
 
         return fix_branch
 
@@ -521,48 +614,146 @@ def create_branch_and_commit(
         raise
 
 
+def _apply_file_content_to_branch(
+    gh_repo: Repository,
+    branch: str,
+    file_path: str,
+    new_content: str,
+    run_key: str,
+) -> None:
+    """Applies the corrected file content to the branch using update_file / create_file.
+
+    This is the PREFERRED strategy (defect #1 fix). It writes the complete
+    corrected file as provided by the fix-engineer agent, avoiding the fragility
+    of applying LLM-generated unified diffs.
+
+    Algorithm:
+      1. get_contents(file_path, ref=branch) → retrieve current blob SHA.
+      2. update_file(path, message, new_content, sha=blob_sha, branch=branch).
+      3. If the file does not exist (404) → create_file(...) instead.
+      4. If a 409 Conflict is returned (stale SHA race condition) → re-raise
+         so the caller can decide whether to retry.
+
+    Args:
+        gh_repo: PyGithub repository.
+        branch: Target branch name (already validated with fix/ prefix).
+        file_path: Repository-relative path of the file to update.
+        new_content: Complete corrected file content (UTF-8 string).
+        run_key: Execution key (for the commit message).
+
+    Raises:
+        MainBranchProtectionError: Defense-in-depth re-validation.
+        GithubException: On API error (including 409 Conflict).
+    """
+    # Defense in depth: re-validate the branch before any write
+    _validate_branch_name(branch)
+
+    commit_message = (
+        f"fix(selfheal): auto-repair {file_path} for run {run_key}\n\n"
+        "Applied by ugp-self-healing-crew (full file content strategy).\n"
+        "Review before merging."
+    )
+
+    try:
+        existing = gh_repo.get_contents(file_path, ref=branch)
+        # get_contents returns a list for directories; guard against it
+        if isinstance(existing, list):
+            raise GithubException(
+                status=422,
+                data={"message": f"'{file_path}' is a directory, not a file."},
+                headers=None,
+            )
+        blob_sha = existing.sha
+        gh_repo.update_file(
+            path=file_path,
+            message=commit_message,
+            content=new_content,
+            sha=blob_sha,
+            branch=branch,
+        )
+        logger.info(
+            "File updated via update_file: path=%s branch=%s", file_path, branch
+        )
+    except GithubException as exc:
+        if exc.status == 404:
+            # File does not exist on the branch → create it
+            logger.warning(
+                "File '%s' not found on branch '%s'; creating it.",
+                file_path,
+                branch,
+            )
+            gh_repo.create_file(
+                path=file_path,
+                message=commit_message,
+                content=new_content,
+                branch=branch,
+            )
+            logger.info(
+                "File created via create_file: path=%s branch=%s", file_path, branch
+            )
+        elif exc.status == 409:
+            # Stale SHA — another process modified the file between get_contents
+            # and update_file. Unlikely in a single fix/* branch per run, but
+            # must be surfaced explicitly so the circuit breaker can retry.
+            logger.error(
+                "409 Conflict applying file '%s' to branch '%s': stale blob SHA. "
+                "The file may have been modified concurrently. "
+                "Circuit breaker will handle the retry.",
+                file_path,
+                branch,
+            )
+            raise
+        else:
+            logger.error(
+                "GitHub API error updating file '%s' on branch '%s': %s",
+                file_path,
+                branch,
+                exc,
+            )
+            raise
+
+
 def _apply_diff_to_branch(
     gh_repo: Repository,
     branch: str,
     diff_content: str,
     run_key: str,
 ) -> None:
-    """Applies the diff to the given branch using the GitHub Contents API.
+    """Fallback: saves the diff as .selfheal/<run_key>.patch for manual review.
 
-    Parses the unified diff to extract the files and their changes.
-    For this project phase applies the first file in the diff.
+    This function is called when file_path/file_content are not available.
+    The preferred path is _apply_file_content_to_branch() which writes the
+    real corrected file content.
 
     Args:
         gh_repo: PyGithub repository.
         branch: Target branch name (already validated with fix/ prefix).
-        diff_content: Diff in unified format.
-        run_key: Execution key (for the commit message).
+        diff_content: Diff in unified format (saved as-is for human review).
+        run_key: Execution key (for the commit message and file path).
     """
     # Defense in depth: re-validate the branch before any write
     _validate_branch_name(branch)
 
     import re  # noqa: PLC0415
 
-    # Parse modified files from the diff
+    # Parse modified files from the diff (for logging only)
     file_pattern = re.compile(r"^\+\+\+ b/(.+)$", re.MULTILINE)
     files_in_diff = file_pattern.findall(diff_content)
 
-    if not files_in_diff:
+    if files_in_diff:
+        logger.warning(
+            "Falling back to patch notes commit for files: %s. "
+            "The real file content was not provided — the patch will need "
+            "manual application from .selfheal/%s.patch.",
+            files_in_diff,
+            run_key,
+        )
+    else:
         logger.warning(
             "No files found in the diff; creating a documentation commit."
         )
-        _create_patch_notes_commit(gh_repo, branch, diff_content, run_key)
-        return
 
-    # For each file in the diff, attempt to update its content.
-    # Simplified implementation (current phase): saves the diff as patch notes.
-    # In production the Tree API would be used to apply multiple files.
-    for filepath in files_in_diff[:1]:  # noqa: B007 — first file in the diff
-        try:
-            _create_patch_notes_commit(gh_repo, branch, diff_content, run_key)
-        except Exception as exc:
-            logger.error("Error applying diff to file %s: %s", filepath, exc)
-            raise
+    _create_patch_notes_commit(gh_repo, branch, diff_content, run_key)
 
 
 def _create_patch_notes_commit(
@@ -615,20 +806,25 @@ def open_pull_request(
     run_key: str,
     analysis_summary: str,
     *,
+    display_diff: str | None = None,
     github_client: Github | None = None,
 ) -> str:
     """Opens a Pull Request from fix_branch to base_branch.
 
-    Includes in the description: the RCA diagnosis, the run_key, and a notice
-    that it was automatically generated by the self-healing crew.
+    Includes in the description: the RCA diagnosis, the run_key, a display diff
+    (computed locally via difflib for human review — not the LLM-generated diff),
+    and a notice that it was automatically generated by the self-healing crew.
 
     Args:
         repo: Repository in 'org/repo' format.
         token: GitHub token with pull_requests:write permissions.
         fix_branch: Branch with the patch (must start with fix/).
-        base_branch: PR base branch (typically main).
+        base_branch: PR base branch (typically the branch that failed).
         run_key: Identifier of the failed execution.
         analysis_summary: RCA analysis summary for the PR description.
+        display_diff: Optional diff computed locally (difflib) for display only.
+                      Not the LLM-generated diff — this one is always syntactically
+                      correct and generated from the actual old/new file contents.
         github_client: Injected Github client (for tests).
 
     Returns:
@@ -645,12 +841,21 @@ def open_pull_request(
     gh_repo = gh.get_repo(repo)
 
     pr_title = f"fix(selfheal): auto-repair for run {run_key}"
+
+    diff_section = ""
+    if display_diff:
+        diff_section = (
+            "\n### Changes Applied\n"
+            f"```diff\n{display_diff}\n```\n"
+        )
+
     pr_body = (
         "## 🤖 Automatic patch — Self-Healing Crew\n\n"
         f"**Run/Commit:** `{run_key}`\n"
         f"**Branch:** `{fix_branch}` → `{base_branch}`\n\n"
         "### RCA Diagnosis\n"
-        f"{analysis_summary}\n\n"
+        f"{analysis_summary}\n"
+        f"{diff_section}\n"
         "---\n"
         "> ⚠️ This PR was automatically generated by `ugp-self-healing-crew`.\n"
         "> The patch was reviewed and approved by the **reviewer** agent before "

@@ -9,8 +9,11 @@ Tasks are chained sequentially:
 The result of each task is accessible by the next one as context
 (context=[previous_task]) natively in CrewAI.
 
-The parse_verdict and extract_diff functions are in crew.verdict so they
-can be imported without depending on crewai (useful in tests).
+The parse_verdict, extract_diff, and extract_file_content functions are in
+crew.verdict so they can be imported without depending on crewai (useful in tests).
+
+Pure-string helpers (_build_fix_description, _build_review_description) live in
+crew.task_descriptions so they can be imported WITHOUT crewai (for unit tests).
 """
 
 from __future__ import annotations
@@ -18,9 +21,20 @@ from __future__ import annotations
 from crewai import Agent, Task
 
 # Re-export for compatibility with existing imports
-from crew.verdict import extract_diff, parse_verdict
+from crew.verdict import extract_diff, extract_file_content, parse_verdict
+from crew.task_descriptions import _build_fix_description, _build_review_description
 
-__all__ = ["build_tasks", "parse_verdict", "extract_diff"]
+__all__ = [
+    "build_tasks",
+    "parse_verdict",
+    "extract_diff",
+    "extract_file_content",
+    "_build_fix_description",
+    "_build_review_description",
+]
+
+
+# ─── Task factory ─────────────────────────────────────────────────────────────
 
 
 def build_tasks(
@@ -30,6 +44,10 @@ def build_tasks(
     ci_log: str,
     repo: str,
     run_key: str,
+    *,
+    file_path: str | None = None,
+    file_content: str | None = None,
+    rca_summary: str | None = None,
 ) -> tuple[Task, Task, Task]:
     """Builds the 3 tasks of the analyze → fix → review cycle.
 
@@ -40,6 +58,18 @@ def build_tasks(
         ci_log: Full text of the failed CI log.
         repo: Repository in 'org/repo' format.
         run_key: Execution identifier (run ID or commit SHA).
+        file_path: Repository-relative path of the file to fix (e.g.
+                   'sample-service/src/coldChain.ts'). Injected into fix_task
+                   to eliminate hallucinated paths.
+        file_content: Current content of the file to fix, fetched from the
+                      failed branch. Injected into fix_task to eliminate
+                      hallucinated variable names and line numbers.
+        rca_summary: Text of the RCA diagnosis produced by the log-analyst in
+                     phase 1. Injected into fix_task and review_task so that the
+                     reviewer can judge the patch AGAINST the actual diagnosis
+                     rather than blindly. This is required in the two-phase flow
+                     because analyze_task runs in a separate Crew and its output
+                     is NOT in CrewAI's task context for phase-2 tasks.
 
     Returns:
         Tuple (analyze_task, fix_task, review_task).
@@ -71,28 +101,19 @@ def build_tasks(
 
     # ── Task 2: Patch generation ──────────────────────────────────────────────
     fix_task = Task(
-        description=(
-            "Based on the diagnosis from the previous task, generate the minimum "
-            "patch that resolves the problem.\n\n"
-            "MANDATORY RULES:\n"
-            "1. The patch must be in unified diff format (git diff).\n"
-            "2. The patch MUST NOT modify files on main or master branches.\n"
-            "3. Include a JUSTIFICATION: section explaining why this change "
-            "   resolves the root cause.\n"
-            "4. If there is not enough information to generate a safe patch, "
-            "   indicate PATCH_IMPOSSIBLE: with the reason.\n\n"
-            "Expected response format:\n"
-            "```diff\n"
-            "<unified diff here>\n"
-            "```\n"
-            "JUSTIFICATION: <explanation>\n"
-            "MODIFIED_FILES: <comma-separated list of files>"
+        description=_build_fix_description(
+            file_path=file_path,
+            file_content=file_content,
+            rca_summary=rca_summary,
         ),
         expected_output=(
-            "A patch in unified diff format (git diff) with:\n"
-            "- The ```diff ... ``` block with the applicable diff.\n"
-            "- JUSTIFICATION: explaining the relationship to the root cause.\n"
-            "- MODIFIED_FILES: list of touched files.\n"
+            "The response must contain:\n"
+            "1. FILE_PATH: <path> — the exact repository-relative path.\n"
+            "2. <<<FILE_CONTENT>>> ... <<<END_FILE_CONTENT>>> — the COMPLETE corrected\n"
+            "   file (all lines, not just changed ones).\n"
+            "3. JUSTIFICATION: explaining the relationship to the root cause.\n"
+            "4. MODIFIED_FILES: list of touched files.\n"
+            "5. Optional: a ```diff ... ``` block for human display only.\n"
             "Or PATCH_IMPOSSIBLE: with reason if the patch cannot be generated."
         ),
         agent=fix_engineer,
@@ -101,28 +122,7 @@ def build_tasks(
 
     # ── Task 3: Review and verdict ────────────────────────────────────────────
     review_task = Task(
-        description=(
-            "Review the diagnosis and the patch generated in the previous tasks "
-            f"for repository '{repo}'.\n\n"
-            "APPROVAL CRITERIA (all must be met):\n"
-            "1. The patch effectively resolves the diagnosed root cause.\n"
-            "2. The diff is syntactically correct and applicable with 'git apply'.\n"
-            "3. It does not introduce obvious security vulnerabilities.\n"
-            "4. It does not modify critical configuration files without justification.\n"
-            "5. The scope of the change is minimal (no unnecessary changes).\n"
-            "6. It does not attempt to make changes directly on main or master.\n\n"
-            "REJECTION CRITERIA (any one is sufficient):\n"
-            "- The patch does not correspond to the diagnosed problem.\n"
-            "- The diff is malformed or not applicable.\n"
-            "- It introduces security changes without sufficient context.\n"
-            "- The scope is too broad (unrelated refactor).\n"
-            "- The previous task marked PATCH_IMPOSSIBLE.\n\n"
-            "MANDATORY RESPONSE FORMAT:\n"
-            "First write your review analysis (max. 200 words).\n"
-            "The LAST line of your response must be exactly one of:\n"
-            "  VERDICT: APPLY\n"
-            "  VERDICT: REJECT — <concise reason>"
-        ),
+        description=_build_review_description(repo, rca_summary=rca_summary),
         expected_output=(
             "Review analysis followed by the structured verdict.\n"
             "The last line must be exactly:\n"

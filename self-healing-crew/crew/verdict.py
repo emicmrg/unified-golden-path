@@ -68,3 +68,50 @@ def extract_diff(fix_output: str) -> str | None:
     if match:
         return match.group(1).strip()
     return None
+
+
+def extract_file_content(fix_output: str) -> tuple[str, str] | None:
+    """Extracts the corrected file path and content from the fix_engineer's output.
+
+    The fix-engineer is instructed to wrap the corrected file in markers:
+
+        FILE_PATH: <path>
+        <<<FILE_CONTENT>>>
+        <complete file content here>
+        <<<END_FILE_CONTENT>>>
+
+    This function parses that format and returns (path, content).
+
+    Args:
+        fix_output: Full text of the fix_task output.
+
+    Returns:
+        Tuple (file_path, file_content) if the markers are found, None otherwise.
+        file_content is the raw content between the markers, with leading/trailing
+        newlines stripped.
+    """
+    # Extract FILE_PATH
+    path_match = re.search(r"FILE_PATH:\s*(.+?)(?:\n|$)", fix_output)
+    if not path_match:
+        return None
+
+    file_path = path_match.group(1).strip()
+    if not file_path:
+        return None
+
+    # Extract content between <<<FILE_CONTENT>>> and <<<END_FILE_CONTENT>>>
+    content_match = re.search(
+        r"<<<FILE_CONTENT>>>\s*\n(.*?)\n<<<END_FILE_CONTENT>>>",
+        fix_output,
+        re.DOTALL,
+    )
+    if not content_match:
+        return None
+
+    file_content = content_match.group(1)
+    # Strip only leading/trailing blank lines, not internal whitespace
+    file_content = file_content.strip("\n")
+    if not file_content:
+        return None
+
+    return file_path, file_content
