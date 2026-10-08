@@ -82,8 +82,7 @@ export function validateTemperature(celsius: number): boolean {
       `validateTemperature: expected a finite number, received: ${celsius}`
     );
   }
-  // BUG: operador > en lugar de >= excluye el límite inferior 2.0 °C
-  return celsius > TEMP_MIN_C && celsius <= TEMP_MAX_C;
+  return celsius >= TEMP_MIN_C && celsius <= TEMP_MAX_C;
 }
 
 /**
