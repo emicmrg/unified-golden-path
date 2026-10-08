@@ -63,6 +63,8 @@ const TEMP_WARN_HIGH_C = 10.0; // > 8.0 and <= 10.0 → WARN
 const HUMIDITY_WARN_LOW_PCT = 20;  // >= 20 and < 30 → WARN
 const HUMIDITY_WARN_HIGH_PCT = 70; // > 60 and <= 70 → WARN
 
+// trigger CI re-run for self-heal dry run
+
 // ---------------------------------------------------------------------------
 // Pure validation functions
 // ---------------------------------------------------------------------------
