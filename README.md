@@ -98,8 +98,13 @@ and flashing the ESP32 firmware.
 | Block | Description                              | Status            |
 |--------|------------------------------------------|-------------------|
 | 1     | Monorepo scaffold + base CDK + firmware  | ✅ Complete        |
-| 2     | CDK stacks (IoT Core, Lambda, DynamoDB)  | 🔄 IoT Core + OTA ready; Lambda/DynamoDB missing |
-| 3     | Complete edge-firmware + OTA             | ⏳ Pending         |
-| 4     | sample-service + web-dashboard           | ⏳ Pending         |
-| 5     | self-healing-crew (AI agent)             | ⏳ Pending         |
-| 6     | CI/CD GitHub Actions                     | ⏳ Pending         |
+| 2     | CDK stacks (IoT Core, self-healing runner, dashboard backend) | ✅ Complete — all 3 stacks deployed and healthy in the sandbox account (see `docs/DEPLOYMENT.md`) |
+| 3     | edge-firmware + OTA                      | 🔄 WiFi + MQTT (mutual TLS) validated end-to-end on hardware; real DHT11 driver and OTA Jobs subscription still pending |
+| 4     | sample-service + web-dashboard           | ✅ Complete — tested, with the self-healing demo bug documented in `sample-service/BUG.md` |
+| 5     | self-healing-crew (AI agent)             | 🔄 Code complete and deployed to Fargate (ECR image pushed); **never exercised end-to-end yet** (0 runs recorded) |
+| 6     | CI/CD GitHub Actions                     | 🔄 All 3 workflows implemented; branch protection on `main` (required before enabling any self-healing runner) still pending confirmation |
+
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
