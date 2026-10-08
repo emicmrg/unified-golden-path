@@ -110,6 +110,12 @@ jobs:
           # Failure context values — passed as container overrides
           WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
           WORKFLOW_RUN_REPO: ${{ github.repository }}
+          # Branch that triggered the failed workflow — used as base_branch for the PR
+          # so the crew opens fix/* → <failed-branch> instead of fix/* → main.
+          # GUARDRAIL: base_branch is only the SOURCE of the SHA; the crew always
+          # commits to fix/* (validated by _validate_branch_name). Even if head_branch
+          # were 'main', no commit ever lands on main.
+          WORKFLOW_RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
           # Infrastructure vars — set from SelfHealingStack CDK outputs
           # (see workflows README for configuration instructions)
           CREW_CLUSTER: ${{ vars.CREW_CLUSTER_NAME }}
@@ -117,24 +123,48 @@ jobs:
           CREW_SUBNETS: ${{ vars.CREW_SUBNET_IDS }}
           CREW_SG: ${{ vars.CREW_SECURITY_GROUP_ID }}
         run: |
-          # Build the overrides JSON to pass the context to the container.
-          # Only environment variables are overridden — not the command or entrypoint.
-          OVERRIDES=$(cat <<EOF
-          {
-            "containerOverrides": [
-              {
-                "name": "crew",
-                "environment": [
-                  { "name": "UGP_RUN_ID",    "value": "${WORKFLOW_RUN_ID}" },
-                  { "name": "UGP_RUN_KEY",   "value": "${WORKFLOW_RUN_ID}" },
-                  { "name": "GITHUB_REPO",   "value": "${WORKFLOW_RUN_REPO}" },
-                  { "name": "AWS_REGION",    "value": "us-east-1" }
+          # ── B3-sec: Branch name sanitization ──────────────────────────────
+          # WORKFLOW_RUN_BRANCH (= github.event.workflow_run.head_branch) is
+          # attacker-controlled: an actor can create a branch whose name contains
+          # JSON special characters or newlines and break the OVERRIDES payload,
+          # or inject additional environment variables.
+          #
+          # Mitigation (two layers):
+          #   1. Validate the branch name against a safe git-ref pattern. Any
+          #      branch that does not match [A-Za-z0-9._/-]+ aborts the job.
+          #   2. Build the OVERRIDES JSON with `jq --arg` instead of shell
+          #      interpolation inside a heredoc. jq properly escapes all special
+          #      characters, so even a branch name that passes the pattern cannot
+          #      affect the JSON structure.
+          #
+          # TODO M1-sec: Moving this step to a Lambda / EventBridge rule with
+          # FIXED overrides (not parameterised from the workflow) remains the
+          # production-grade solution. The saneo + jq approach closes the JSON
+          # injection vector for the current Runner 2 architecture.
+          # See: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html#container_definition_environment
+          if ! echo "${WORKFLOW_RUN_BRANCH}" | grep -qE '^[A-Za-z0-9._/-]+$'; then
+            echo "ERROR: WORKFLOW_RUN_BRANCH '${WORKFLOW_RUN_BRANCH}' contains unsafe characters. Aborting." >&2
+            exit 1
+          fi
+
+          # Build the overrides JSON safely via jq --arg (values are escaped,
+          # not interpolated directly into the JSON string).
+          OVERRIDES=$(jq -n \
+            --arg rid    "${WORKFLOW_RUN_ID}" \
+            --arg repo   "${WORKFLOW_RUN_REPO}" \
+            --arg branch "${WORKFLOW_RUN_BRANCH}" \
+            '{
+              containerOverrides: [{
+                name: "crew",
+                environment: [
+                  { name: "UGP_RUN_ID",      value: $rid    },
+                  { name: "UGP_RUN_KEY",     value: $rid    },
+                  { name: "GITHUB_REPO",     value: $repo   },
+                  { name: "UGP_BASE_BRANCH", value: $branch },
+                  { name: "AWS_REGION",      value: "us-east-1" }
                 ]
-              }
-            ]
-          }
-          EOF
-          )
+              }]
+            }')
 
           # Launch the task — we do not wait for completion (fire-and-forget).
           # The crew will run asynchronously; logs are available in CloudWatch.

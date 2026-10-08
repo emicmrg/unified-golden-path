@@ -1,8 +1,16 @@
 import * as cdk from "aws-cdk-lib";
 import { Annotations, Match, Template } from "aws-cdk-lib/assertions";
 
+import * as fs from "node:fs";
+import * as path from "node:path";
+
 import { DashboardStack, DashboardStackProps } from "../src/stacks/dashboard-stack";
-import { DASHBOARD_STATUS_HANDLER } from "../src/lambda/dashboard-status-handler";
+
+/** Source of the Lambda handler asset (read to assert contract, not executed in tests). */
+const HANDLER_SOURCE = fs.readFileSync(
+  path.join(__dirname, "../src/lambda/dashboard-status-handler.mjs"),
+  "utf8",
+);
 
 /** Fictitious account/region: the tests NEVER touch AWS and need no credentials. */
 const TEST_ENV = { region: "us-east-1", account: "123456789012" } as const;
@@ -216,7 +224,9 @@ describe("DashboardStack — read-only dashboard backend", () => {
         FunctionName: "ugp-dashboard-status",
         Runtime: "nodejs20.x",
         Architectures: ["arm64"],
-        Handler: "index.handler",
+        // Node.js resolves .mjs / .js / .cjs automatically — the extension must NOT appear
+        // in the handler string or Lambda throws Runtime.HandlerNotFound (502).
+        Handler: "dashboard-status-handler.handler",
         MemorySize: 256,
         Timeout: 10,
       });
@@ -224,21 +234,46 @@ describe("DashboardStack — read-only dashboard backend", () => {
 
     it("Has reserved concurrency (cost cap of a public URL)", () => {
       template.hasResourceProperties("AWS::Lambda::Function", {
-        ReservedConcurrentExecutions: 5,
+        ReservedConcurrentExecutions: 2,
       });
     });
 
     it("Receives the table name and the attempt cap through the environment", () => {
-      template.hasResourceProperties("AWS::Lambda::Function", {
-        Environment: { Variables: { TABLE_NAME: TABLE_NAME, MAX_ATTEMPTS: "2" } },
+      // GITHUB_REPO is absent when no context is passed — Lambda degrades gracefully.
+      const { Variables } = (
+        Object.values(
+          template.findResources("AWS::Lambda::Function", {
+            Properties: { FunctionName: "ugp-dashboard-status" },
+          }),
+        )[0] as any
+      ).Properties.Environment;
+      expect(Variables.TABLE_NAME).toBe(TABLE_NAME);
+      expect(Variables.MAX_ATTEMPTS).toBe("2");
+    });
+
+    it("Passes GITHUB_REPO env var when githubOrg and githubRepo props are provided", () => {
+      const t = synth({ githubOrg: "acme", githubRepo: "ugp" });
+      t.hasResourceProperties("AWS::Lambda::Function", {
+        Environment: {
+          Variables: Match.objectLike({
+            TABLE_NAME: TABLE_NAME,
+            GITHUB_REPO: "acme/ugp",
+          }),
+        },
       });
     });
 
-    it("The code is inline and fits the 4096 char ZipFile limit", () => {
-      expect(DASHBOARD_STATUS_HANDLER.length).toBeLessThan(4096);
-      template.hasResourceProperties("AWS::Lambda::Function", {
-        Code: { ZipFile: Match.stringLikeRegexp("@aws-sdk/client-dynamodb") },
-      });
+    it("The code is deployed as an S3 asset (migrated from inline to support GitHub logic)", () => {
+      // After migration the template carries an S3 key, not a ZipFile string.
+      const fn = Object.values(
+        template.findResources("AWS::Lambda::Function", {
+          Properties: { FunctionName: "ugp-dashboard-status" },
+        }),
+      )[0] as any;
+      // Asset-based code has { S3Bucket, S3Key } — not a ZipFile.
+      expect(fn.Properties.Code.S3Bucket).toBeDefined();
+      expect(fn.Properties.Code.S3Key).toBeDefined();
+      expect(fn.Properties.Code.ZipFile).toBeUndefined();
     });
 
     it("Uses its own log group with retention and sandbox deletion", () => {
@@ -300,23 +335,23 @@ describe("DashboardStack — read-only dashboard backend", () => {
 
     it("The handler does not invoke any DynamoDB write API", () => {
       ["PutItemCommand", "UpdateItemCommand", "DeleteItemCommand", "BatchWriteItemCommand"].forEach(
-        (api) => expect(DASHBOARD_STATUS_HANDLER).not.toContain(api),
+        (api) => expect(HANDLER_SOURCE).not.toContain(api),
       );
     });
 
     it("The handler returns the data contract agreed with the frontend", () => {
-      ["pipeline:", "circuitBreaker:", "crew:", "timeline", "pr: null"].forEach((key) =>
-        expect(DASHBOARD_STATUS_HANDLER).toContain(key),
+      ["pipeline", "circuitBreaker", "crew", "timeline", "pr: null"].forEach((key) =>
+        expect(HANDLER_SOURCE).toContain(key),
       );
-      // The pipeline stays honest while the block 6 CI does not exist.
-      expect(DASHBOARD_STATUS_HANDLER).toContain('status: "unknown"');
+      // The handler degrades honestly to 'unknown' when GitHub is unreachable or unconfigured.
+      expect(HANDLER_SOURCE).toContain("'unknown'");
     });
 
     it("The handler does not expose the raw DynamoDB item (it filters the internal keys)", () => {
       // It projects only the needed attributes and drops the `_*` helpers from the response.
-      expect(DASHBOARD_STATUS_HANDLER).toContain("ProjectionExpression");
-      expect(DASHBOARD_STATUS_HANDLER).toContain("({ _createdAt, _lastUpdated, ...row })");
-      expect(DASHBOARD_STATUS_HANDLER).not.toContain("expiresAt");
+      expect(HANDLER_SOURCE).toContain("ProjectionExpression");
+      expect(HANDLER_SOURCE).toContain("({ _createdAt, _lastUpdated, ...row })");
+      expect(HANDLER_SOURCE).not.toContain("expiresAt");
     });
   });
 

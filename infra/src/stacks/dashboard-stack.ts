@@ -7,10 +7,10 @@ import * as logs from "aws-cdk-lib/aws-logs";
 import { Construct } from "constructs";
 
 import { IotGuestIdentityPool } from "../constructs/iot-guest-identity-pool";
-import { DASHBOARD_STATUS_HANDLER } from "../lambda/dashboard-status-handler";
-
-/** CloudFormation hard limit for `AWS::Lambda::Function.Code.ZipFile`. */
-const INLINE_CODE_MAX_CHARS = 4096;
+import {
+  DASHBOARD_STATUS_HANDLER_ASSET_PATH,
+  DASHBOARD_STATUS_HANDLER_PROP,
+} from "../lambda/dashboard-status-handler";
 
 /**
  * Shape of an AWS IoT ATS data endpoint: `<prefix>-ats.iot.<region>.amazonaws.com`.
@@ -51,7 +51,7 @@ const DEFAULTS = {
   amplifyAppName: "ugp-dashboard",
   amplifyBranchName: "main",
   /** Concurrency cap of the public Function URL (see rationale in the constructor). */
-  reservedConcurrency: 5,
+  reservedConcurrency: 2,
   /**
    * Context key that opts IN to a wildcard (`*`) CORS origin on the status Function URL.
    * Without it the stack fails closed (see the guard in the constructor).
@@ -78,6 +78,23 @@ export interface DashboardStackProps extends cdk.StackProps {
    * `-c ugp:allowWildcardCors=true`. See the guard in the constructor.
    */
   readonly allowedOrigins?: readonly string[];
+
+  /**
+   * GitHub organisation (or username) that owns the repository.
+   * Combined with `githubRepo` to form `GITHUB_REPO=owner/repo` passed to the status Lambda.
+   * Without these the Lambda degrades to `pipeline.status='unknown'` instead of querying
+   * the GitHub Actions API.
+   *
+   * Mirrors the `ugp:githubOrg` context key used by SelfHealingStack; no new context key needed.
+   * @example 'emicmrg'
+   */
+  readonly githubOrg?: string;
+
+  /**
+   * GitHub repository name (without owner prefix).
+   * @example 'unified-golden-path'
+   */
+  readonly githubRepo?: string;
 
   /** MQTT telemetry topic. @default 'ugp/telemetry/ugp-gateway-01' */
   readonly telemetryTopic?: string;
@@ -221,13 +238,15 @@ export class DashboardStack extends cdk.Stack {
     });
 
     // ── 2. Status Lambda (read-only) ─────────────────────────────────────────
-    if (DASHBOARD_STATUS_HANDLER.length > INLINE_CODE_MAX_CHARS) {
-      // Fail in `cdk synth`, not halfway through `cdk deploy`.
-      throw new Error(
-        `The inline handler is ${DASHBOARD_STATUS_HANDLER.length} characters and CloudFormation ` +
-          `limits Code.ZipFile to ${INLINE_CODE_MAX_CHARS}. Move it to lambda.Code.fromAsset().`,
-      );
-    }
+    // Handler migrated to lambda.Code.fromAsset: the GitHub Actions polling logic pushed the
+    // handler past the 4096-char CloudFormation inline ZipFile limit. See
+    // infra/src/lambda/dashboard-status-handler.ts for the full rationale.
+
+    // GitHub pipeline env vars — compose GITHUB_REPO='owner/repo' from context if provided.
+    // Without them the Lambda degrades gracefully to pipeline.status='unknown'.
+    const githubOrg = props.githubOrg;
+    const githubRepo = props.githubRepo;
+    const githubRepoEnv = githubOrg && githubRepo ? `${githubOrg}/${githubRepo}` : undefined;
 
     // Explicit log group (and not the `logRetention` prop, deprecated: it creates a custom
     // resource with an extra Lambda and `logs:PutRetentionPolicy` permissions over the whole
@@ -281,19 +300,32 @@ export class DashboardStack extends cdk.Stack {
         "Aggregated golden path status for the web-dashboard (read-only, no auth)",
       runtime: lambda.Runtime.NODEJS_20_X,
       architecture: lambda.Architecture.ARM_64, // ~20% cheaper per ms than x86, same code.
-      handler: "index.handler",
-      code: lambda.Code.fromInline(DASHBOARD_STATUS_HANDLER),
+      handler: DASHBOARD_STATUS_HANDLER_PROP,
+      // Asset: the handler .mjs file lives in infra/src/lambda/ next to this stack.
+      // CDK hashes the directory content → CloudFormation updates on every handler change.
+      // The Lambda is NOT inside a VPC, so it has direct outbound internet access to
+      // api.github.com without a NAT Gateway.
+      code: lambda.Code.fromAsset(DASHBOARD_STATUS_HANDLER_ASSET_PATH, {
+        // Only include the handler file itself — the directory also contains this .ts file
+        // and other handlers; we don't want to ship the TypeScript sources.
+        exclude: ["*.ts", "*.d.ts", "*.js.map"],
+      }),
       role: statusRole,
       logGroup: statusLogGroup,
       memorySize: 256,
       timeout: cdk.Duration.seconds(10),
       // The Function URL is anonymous: with no cap, a `curl` loop scales the Lambda without
-      // limit and the bill with it. 5 concurrent executions are plenty for a dashboard polling
-      // every few seconds, and they turn abuse into 429s instead of cost.
+      // limit and the bill with it. 2 concurrent executions are plenty for a dashboard polling
+      // every few seconds (one warm instance with in-module cache absorbs almost all traffic),
+      // and they turn abuse into 429s instead of cost.
       reservedConcurrentExecutions: DEFAULTS.reservedConcurrency,
       environment: {
         TABLE_NAME: tableName,
         MAX_ATTEMPTS: String(maxAttempts),
+        // GitHub Actions pipeline polling (public API, no token required).
+        // Format: 'owner/repo' — e.g. 'emicmrg/unified-golden-path'.
+        // Absent → Lambda degrades to pipeline.status='unknown' (graceful).
+        ...(githubRepoEnv ? { GITHUB_REPO: githubRepoEnv } : {}),
       },
     });
 
