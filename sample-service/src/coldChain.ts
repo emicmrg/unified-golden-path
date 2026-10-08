@@ -6,6 +6,8 @@
  *   Humidity:   30 %RH – 60 %RH (both endpoints INCLUSIVE)
  */
 
+// Self-healing dry-run marker: 2026-10-08 (re-trigger CI for a fresh run_key)
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
