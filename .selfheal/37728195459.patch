@@ -1,0 +1,11 @@
+--- a/src/coldChain.ts
++++ b/src/coldChain.ts
+@@ -20,7 +20,7 @@ export const HUMIDITY_MAX_PERCENT = 70.0;
+  * @returns true if temperature is valid, false otherwise
+  */
+ export function validateTemperature(temperature: number): boolean {
+-  return temperature > TEMP_MIN_C && temperature <= TEMP_MAX_C;
++  return temperature >= TEMP_MIN_C && temperature <= TEMP_MAX_C;
+ }
+ 
+ /**
