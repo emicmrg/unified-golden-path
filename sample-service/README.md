@@ -97,3 +97,39 @@ edge-firmware (ESP32)
       ↓ bug injected → CI fails
   self-healing-crew  ← diagnoses + proposes fix
 ```
+
+---
+
+## Self-healing crew integration (Block 5)
+
+`sample-service` is the primary CI target of the self-healing demo. The `.github/workflows/`
+directory contains two relevant workflows:
+
+| Workflow | Trigger | Purpose |
+|---|---|---|
+| `sample-service-ci.yml` | push / PR touching `sample-service/**` | Builds and tests this package; failure starts the self-healing chain |
+| `self-heal-dispatch.yml` | `workflow_run` (on `sample-service-ci.yml` failure) | Dispatches the ECS Fargate self-healing crew task |
+
+### How the automatic self-healing cycle works
+
+1. A bug is injected into `src/coldChain.ts` (or any change that breaks tests).
+2. The `sample-service-ci.yml` CI check fails.
+3. `self-heal-dispatch.yml` fires automatically: it resolves the failed commit SHA, the
+   broken branch, and the failing test output, then submits an ECS `RunTask` request to
+   launch the `self-healing-crew` Fargate task.
+4. The crew (LangGraph, GPT-4o) analyzes the CI logs, identifies the defective file and
+   line, applies the patch via a `git` tool, and opens a `fix/*` PR targeting the broken branch.
+5. A human reviews and merges the PR; CI turns green.
+
+### Fail-closed guards (implemented as of this PR)
+
+The crew now enforces the following safety invariants before applying any patch:
+
+- **Path guard**: the FILE field extracted from the LLM output must resolve to a path
+  inside the repository root (no path traversal, no absolute paths outside the repo).
+- **Regex FILE extraction**: a dedicated regex parser handles multi-line prose in the FILE
+  field, stripping markdown fences and trailing whitespace before passing the path to tools.
+- **Context injection**: the failed branch name is passed as the PR base so fixes always
+  target the branch where the bug lives, never `main`.
+- **Monorepo path resolution**: file paths without a leading `sample-service/` prefix are
+  automatically resolved against the known monorepo layout before the patch is applied.

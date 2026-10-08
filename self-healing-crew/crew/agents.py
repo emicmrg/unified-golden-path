@@ -90,7 +90,9 @@ def build_agents(settings: Settings) -> tuple[Agent, Agent, Agent]:
             "identified by the log analyst. The patch must: "
             "(1) be as small as possible (principle of minimal intervention), "
             "(2) not break other parts of the code, "
-            "(3) include the complete unified diff and the justification for the change."
+            "(3) return the COMPLETE corrected file content (not just changed lines) "
+            "in the required format with FILE_PATH and <<<FILE_CONTENT>>> markers, "
+            "(4) include a JUSTIFICATION explaining why the change resolves the root cause."
         ),
         backstory=(
             "You are a full-stack software engineer with expertise in regression "
@@ -99,8 +101,11 @@ def build_agents(settings: Settings) -> tuple[Agent, Agent, Agent]:
             "When generating a patch you always think about side effects and "
             "prioritize surgical changes over broad refactors. "
             "You never introduce new dependencies without explicit justification. "
-            "You produce diffs in unified format (git diff) that can be applied "
-            "directly with 'git apply'."
+            "You always return the COMPLETE corrected file content (every line of the file) "
+            "wrapped in <<<FILE_CONTENT>>> ... <<<END_FILE_CONTENT>>> markers, "
+            "because the system applies your output directly via the GitHub Contents API "
+            "— it does NOT parse diffs. Modifying only the lines strictly needed to fix "
+            "the root cause, leaving all other lines unchanged."
         ),
         llm=llm,
         verbose=False,

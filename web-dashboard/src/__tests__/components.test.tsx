@@ -152,9 +152,10 @@ describe("GoldenPath", () => {
     expect(screen.getByText(/passing/i)).toBeInTheDocument();
   });
 
-  it("shows block 6 note when pipeline is unknown", () => {
+  it("shows a note when pipeline is unknown and no handler note is present", () => {
     render(<GoldenPath />);
-    expect(screen.getByText(/Block 6/i)).toBeInTheDocument();
+    // The badge shows 'Unknown'; the component does not invent a 'Block 6' development note.
+    expect(screen.getAllByText(/unknown/i).length).toBeGreaterThan(0);
   });
 
   it("shows an alert when there is an API error", () => {

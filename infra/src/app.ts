@@ -111,6 +111,10 @@ new DashboardStack(app, "DashboardStack", {
     .filter((origin) => origin.length > 0),
   iotEndpointAddress: app.node.tryGetContext("ugp:iotEndpoint") as string | undefined,
   resolveIotEndpoint: app.node.tryGetContext("ugp:resolveIotEndpoint") === "true",
+  // GitHub org/repo for the status Lambda pipeline polling (same context keys as SelfHealingStack).
+  // Without them the Lambda degrades to pipeline.status='unknown' (graceful, not a synth error).
+  githubOrg: app.node.tryGetContext("ugp:githubOrg") as string | undefined,
+  githubRepo: app.node.tryGetContext("ugp:githubRepo") as string | undefined,
   // TODO(demo): to lock down the hosting during rehearsals, manually create a secret with
   // {"username","password"} and pass its ARN. The password never enters the repo nor the
   // template: CloudFormation resolves it at deploy time via dynamic reference.

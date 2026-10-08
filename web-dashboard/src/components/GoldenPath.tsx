@@ -2,7 +2,9 @@
  * GoldenPath.tsx — View 2: CI pipeline / IoT Job status.
  *
  * Displays the status of the last CI run and the last IoT job honestly:
- * if no real data is available, shows 'unknown' / placeholder — never fakes 'passing'.
+ * - If real pipeline data is available (status !== 'unknown'), shows the badge + last-run link.
+ * - If no real data is available, shows 'unknown' with the note from the handler — never fakes 'passing'.
+ * - IoT Job / OTA: no data available yet; displayed as unknown without a development-block label.
  */
 
 import React from "react";
@@ -74,18 +76,26 @@ export function GoldenPath(): React.ReactElement {
       )}
 
       <div className="golden-path__content">
-        {/* CI/CD pipeline status */}
+        {/* CI/CD pipeline status — real data from GitHub Actions via Lambda */}
         <article className="info-card" aria-label="CI/CD Pipeline">
           <h3>CI/CD Pipeline</h3>
           <PipelineBadge status={pipeline.status} />
 
-          {pipeline.status === "unknown" && (
+          {/* Show handler note only when status is unknown and there is an explanatory note */}
+          {pipeline.status === "unknown" && pipeline.note && (
             <p className="placeholder-note">
-              ℹ️ Pipeline status will be available in Block 6 (CI/CD). Showing an honest
-              placeholder for now.
+              ℹ️ {pipeline.note}
             </p>
           )}
 
+          {/* Generic fallback when unknown and no note (e.g. data is null / loading) */}
+          {pipeline.status === "unknown" && !pipeline.note && !loading && data !== null && (
+            <p className="placeholder-note">
+              ℹ️ Pipeline status unavailable — the GitHub Actions API did not return a result.
+            </p>
+          )}
+
+          {/* Real last-run details when we have them */}
           {lastRun && (
             <dl className="run-details">
               <InfoRow label="Run ID">
@@ -105,15 +115,15 @@ export function GoldenPath(): React.ReactElement {
           )}
         </article>
 
-        {/* Last IoT Job */}
+        {/* Last IoT Job / OTA — no data source yet; honest unknown, no block label */}
         <article className="info-card" aria-label="Last IoT Job / OTA">
           <h3>IoT Job / OTA</h3>
-          <span className="badge badge--gray" aria-label="Status: Unknown — pending block 3">
-            ⚪ Pending (Block 3)
+          <span className="badge badge--gray" aria-label="Status: Unknown — no OTA data yet">
+            ⚪ Unknown
           </span>
           <p className="placeholder-note">
-            ℹ️ The last OTA job status will be available once Block 3 (edge firmware OTA)
-            is complete.
+            ℹ️ No OTA job data available yet. This will show the last firmware update once
+            edge-firmware OTA is operational.
           </p>
         </article>
       </div>
