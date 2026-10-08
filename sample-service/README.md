@@ -133,3 +133,13 @@ The crew now enforces the following safety invariants before applying any patch:
   target the branch where the bug lives, never `main`.
 - **Monorepo path resolution**: file paths without a leading `sample-service/` prefix are
   automatically resolved against the known monorepo layout before the patch is applied.
+
+---
+
+## Related: edge firmware OTA support
+
+The `edge-firmware` component now supports over-the-air updates via **AWS IoT Jobs**
+(`esp_https_ota` + A/B partition rollback). When the self-healing crew patches and merges
+a firmware fix, the OTA pipeline can push the new binary to the device without manual
+reflashing. See [`edge-firmware/README.md`](../edge-firmware/README.md) and
+[`edge-firmware/main/ota_jobs.c`](../edge-firmware/main/ota_jobs.c) for details.

@@ -19,6 +19,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 #include <time.h>
 
 #include "esp_log.h"
@@ -218,6 +219,16 @@ esp_err_t mqtt_iot_start(void)
         ESP_LOGI(TAG, "MQTT client started — connecting to broker …");
     }
     return ret;
+}
+
+struct esp_mqtt_client *mqtt_iot_get_client(void)
+{
+    return s_mqtt_client;
+}
+
+bool mqtt_iot_is_connected(void)
+{
+    return s_mqtt_connected;
 }
 
 void mqtt_iot_publish_telemetry(float temp_c, float humidity_pct)

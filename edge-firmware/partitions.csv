@@ -12,10 +12,14 @@
 # cloud with AWS Signer before distribution. ON-DEVICE signature verification
 # (Secure Boot v2 / CONFIG_SECURE_SIGNED_APP_*) is a Block 3 deliverable.
 #
-# ROLLBACK: automatic A/B rollback (esp_ota_mark_app_valid_cancel_rollback +
-# health-check) is activated in Block 3; that is why
-# CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE is commented out in sdkconfig.defaults.
-# There is currently no automatic rollback to the previous slot on boot failure.
+# ROLLBACK: automatic A/B rollback IS ENABLED via
+# CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y in sdkconfig.defaults.
+# The bootloader marks a freshly OTA-booted image as ESP_OTA_IMG_PENDING_VERIFY.
+# app_main.c calls ota_jobs_mark_valid_if_pending() (implemented in ota_jobs.c)
+# AFTER confirming both WiFi AND MQTT are connected; only then is the image
+# marked VALID (esp_ota_mark_app_valid_cancel_rollback).  If the health check
+# fails — or the device reboots before mark_valid is called — the bootloader
+# automatically reverts to the previous OTA slot on the next boot.
 #
 # 4 MB (0x400000) layout:
 #   nvs       : 0x009000 →  24 KB  (configuration, TLS certificates in Block 2)
