@@ -14,16 +14,29 @@ CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
 
 # ── Custom partition table ───────────────────────────────────────────────────
+# partitions.csv defines the A/B OTA layout (ota_0 + ota_1 + otadata).
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_PARTITION_TABLE_OFFSET=0x8000
 
-# ── Bootloader / OTA ─────────────────────────────────────────────────────────
+# ── Bootloader / OTA rollback ─────────────────────────────────────────────────
 CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
-# TODO Block 3: enable together with esp_ota_mark_app_valid_cancel_rollback()
-# after health check (temperature, MQTT connectivity) is implemented in app_main.c.
-# Enabling without mark_valid causes the first OTA to always roll back on boot.
-# CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+#
+# ROLLBACK ENABLE — ORDER IS CRITICAL:
+#   This option marks a freshly OTA-booted image as ESP_OTA_IMG_PENDING_VERIFY.
+#   If app_main does not call esp_ota_mark_app_valid_cancel_rollback() within
+#   the healthCheckSeconds window the bootloader will roll back to ota_0 on
+#   the next reboot.
+#
+#   ota_jobs_mark_valid_if_pending() in ota_jobs.c implements the health check
+#   and is called from app_main.c AFTER wifi_sta_init_and_connect() +
+#   mqtt_iot_start() succeed.  That constitutes a verified WiFi+MQTT health
+#   check — if either fails, app_main aborts before reaching the mark call and
+#   the bootloader will roll back.
+#
+#   NEVER enable this line without the matching call in app_main.c — doing so
+#   causes every OTA to roll back on the first post-OTA boot.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # ── Log level ────────────────────────────────────────────────────────────────
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
@@ -33,12 +46,41 @@ CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
 CONFIG_FREERTOS_HZ=100
 CONFIG_FREERTOS_USE_TRACE_FACILITY=n
 
-# ── Minimum stack size for app_main ──────────────────────────────────────────
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+# ── Main task stack ───────────────────────────────────────────────────────────
+# Increased from 4096 to accommodate the WiFi + MQTT + cJSON stack frames that
+# are now called from app_main.  The OTA download itself runs in its own task
+# (OTA_TASK_STACK_SIZE = 12 kB in ota_jobs.c) so its stack is not counted here.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
-# ── WiFi (required for MQTT in Block 2) ──────────────────────────────────────
+# ── WiFi ─────────────────────────────────────────────────────────────────────
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
 
-# ── Disable unused components ─────────────────────────────────────────────────
+# ── TLS / Certificate bundle ──────────────────────────────────────────────────
+# Required for esp_https_ota() to validate the S3 presigned URL.
+# crt_bundle_attach = esp_crt_bundle_attach in ota_jobs.c uses this bundle.
+# The Amazon Root CA / DigiCert Global Root used by S3 presigned URLs is
+# included in the ESP-IDF default bundle — no extra PEM needs to be embedded.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+# Use the default bundle that ships with ESP-IDF (includes Amazon/DigiCert CAs).
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# ── MQTT (esp-mqtt) ────────────────────────────────────────────────────────────
+# Allow registering multiple event handlers on the same client (mqtt_iot.c +
+# ota_jobs.c both call esp_mqtt_client_register_event).
+CONFIG_MQTT_EVENT_QUEUE_SIZE=10
+
+# MQTT receive/send buffer size.
+#
+# NOTE: CONFIG_MQTT_EVENT_QUEUE_SIZE above is dead without
+# CONFIG_MQTT_USE_CUSTOM_CONFIG=y — esp-mqtt ignores it unless custom config
+# is enabled.
+#
+# 4 096 B is large enough to receive most job documents (including a typical
+# presigned S3 URL of ~1 200 B) in a single chunk, which reduces the chance
+# of fragmentation.  However, a larger buffer does NOT guarantee
+# non-fragmentation (the broker may still split the PUBLISH across TCP
+# segments).  The ota_jobs.c reassembly logic (B1 fix) is the AUTHORITATIVE
+# solution; this is a complementary optimisation only.
+CONFIG_MQTT_USE_CUSTOM_CONFIG=y
+CONFIG_MQTT_BUFFER_SIZE=4096

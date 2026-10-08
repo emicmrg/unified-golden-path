@@ -1,5 +1,7 @@
 menu "UGP Edge Firmware"
 
+    # ── Environment source ────────────────────────────────────────────────
+
     choice UGP_ENV_SOURCE
         prompt "Ambient data source"
         default UGP_SOURCE_SIMULATED
@@ -38,5 +40,82 @@ menu "UGP Edge Firmware"
                 a bidirectional pin (output during the start pull-down).
             dht11_init() will reject GPIOs 6–11 with ESP_ERR_INVALID_ARG
             as a second line of defence even if the range is widened here.
+
+    # ── WiFi credentials ──────────────────────────────────────────────────
+
+    config UGP_WIFI_SSID
+        string "WiFi SSID"
+        default "YourHotspotSSID"
+        help
+            SSID of the 2.4 GHz access point the ESP32 will connect to.
+            The ESP32-D0WD-V3 supports 2.4 GHz 802.11 b/g/n ONLY.
+            Do not include surrounding quotes.
+            Override at build time via:
+              idf.py -DCONFIG_UGP_WIFI_SSID=\"MySSID\" build
+            or by placing the value in sdkconfig.local (not committed).
+
+    config UGP_WIFI_PASSWORD
+        string "WiFi Password"
+        default "YourWiFiPassword"
+        help
+            Password for CONFIG_UGP_WIFI_SSID.
+            Leave empty for open networks.
+            Do not commit real passwords — use sdkconfig.local or a CI secret.
+
+    config UGP_WIFI_SCAN_DIAG
+        bool "Enable WiFi scan diagnostic at startup"
+        default n
+        help
+            When enabled, the firmware runs a passive AP scan after WiFi
+            starts and logs all visible APs before connecting. Useful to
+            diagnose SSID-not-found errors (band, channel, hidden flag).
+            Disable for production to save startup time (~200 ms).
+
+    config UGP_WIFI_COUNTRY_CODE
+        string "WiFi regulatory country code (ISO 3166-1 alpha-2)"
+        default "US"
+        help
+            Two-letter country code for the regulatory domain.
+            Affects TX power and allowed channels.
+            Common values: US, MX, GB, DE, JP.
+
+    # ── AWS IoT Core ──────────────────────────────────────────────────────
+
+    config UGP_IOT_ENDPOINT
+        string "AWS IoT Core endpoint hostname"
+        default "your-iot-endpoint.iot.us-east-1.amazonaws.com"
+        help
+            The ATS endpoint of your AWS IoT Core account.
+            Retrieve with:
+              aws iot describe-endpoint --endpoint-type iot:Data-ATS
+            Format: <prefix>.iot.<region>.amazonaws.com
+            Do not include the port.
+
+    config UGP_IOT_THING_NAME
+        string "AWS IoT Thing name (also the MQTT client ID)"
+        default "ugp-gateway-01"
+        help
+            The Thing name as registered in AWS IoT Core.
+            The MQTT client ID is set to this value; the IoT policy
+            enforces ClientId == ThingName, so changing it requires
+            re-provisioning the policy.
+
+    config UGP_MQTT_PORT
+        int "MQTT over TLS port"
+        default 8883
+        range 1 65535
+        help
+            Port used for MQTT over mutual TLS.
+            AWS IoT Core listens on 8883 (standard MQTTS).
+
+    config UGP_TELEMETRY_TOPIC
+        string "MQTT topic for telemetry publishes"
+        default "ugp/telemetry/ugp-gateway-01"
+        help
+            The MQTT topic where the device publishes temperature and
+            humidity readings.
+            Recommended format: ugp/telemetry/<thingName>
+            The IoT policy allows publish to this topic when the
+            thingName matches the authenticated certificate.
 
 endmenu

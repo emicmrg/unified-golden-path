@@ -28,6 +28,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -60,6 +61,31 @@ esp_err_t mqtt_iot_init(void);
  * @return esp_mqtt_client_start() return value (ESP_OK on success).
  */
 esp_err_t mqtt_iot_start(void);
+
+/**
+ * @brief Returns the raw esp_mqtt_client_handle_t used by this module.
+ *
+ * Intended for use by ota_jobs.c, which registers its own MQTT event handler
+ * on the same client instead of opening a second connection.
+ *
+ * @return The client handle, or NULL if mqtt_iot_init() has not been called.
+ */
+struct esp_mqtt_client *mqtt_iot_get_client(void);
+
+/**
+ * @brief Returns true if the MQTT client is currently connected to the broker.
+ *
+ * The flag is set in MQTT_EVENT_CONNECTED and cleared in
+ * MQTT_EVENT_DISCONNECTED / MQTT_EVENT_ERROR.
+ *
+ * Used by app_main.c health-check (B3 fix): the firmware must only be marked
+ * VALID after BOTH WiFi AND MQTT are confirmed up.  Because mqtt_iot_start()
+ * is asynchronous, the caller must poll this function after starting the
+ * client.
+ *
+ * @return true if connected, false otherwise.
+ */
+bool mqtt_iot_is_connected(void);
 
 /**
  * @brief Publishes a telemetry payload to CONFIG_UGP_TELEMETRY_TOPIC at QoS 1.
