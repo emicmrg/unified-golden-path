@@ -143,3 +143,14 @@ The `edge-firmware` component now supports over-the-air updates via **AWS IoT Jo
 a firmware fix, the OTA pipeline can push the new binary to the device without manual
 reflashing. See [`edge-firmware/README.md`](../edge-firmware/README.md) and
 [`edge-firmware/main/ota_jobs.c`](../edge-firmware/main/ota_jobs.c) for details.
+
+---
+
+## Related: web-dashboard as a presentation tool
+
+The `web-dashboard` package doubles as a **MDX slide deck** for the Platform Engineering
+talk. It includes an interactive bento-layout slide that embeds the live dashboard (real
+Amplify-hosted data) directly inside the presentation, so the sample-service CI pipeline
+and self-healing demo can be shown in context without switching windows. The slide engine
+supports keyboard navigation (arrow keys, 1–9 shortcuts, dot-nav) and an accessible
+focus-mode overlay for zooming into individual bento tiles.

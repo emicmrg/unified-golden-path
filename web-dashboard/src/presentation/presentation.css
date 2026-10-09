@@ -1,0 +1,1811 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   presentation.css — Motor de slides · Tema claro Slalom · Fase 1
+   Unified Golden Path — Platform Engineering Talk
+
+   ARQUITECTURA:
+   - :root[data-theme="presentation"] sobrescribe las variables dark del dashboard.
+   - .deck envuelve todo el sistema de slides.
+   - .slide--* son los layouts específicos por tipo de slide.
+   - .live-dashboard / .bento-* son el grid de la slide del dashboard.
+   - Transiciones CSS en .slide-wrapper con spring críticamente amortiguado.
+   - prefers-reduced-motion: cross-fade en vez de translate.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────────────────────
+   TEMA CLARO — sobrescribe variables dark del :root global
+   Activado cuando .deck está en el DOM (body.presentation-mode o .deck directamente)
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Cuando el deck está presente, reemplazamos el fondo del body */
+body:has(.deck) {
+  background: #FFFFFF;
+  color: #292929;
+}
+
+/* Tokens del tema claro — scoped al .deck para no contaminar el modo dashboard */
+.deck {
+  /* ── Paleta Slalom clara (confirmada de slalom.com) ── */
+  --color-bg:            #FFFFFF;
+  --color-bg-alt:        #F5F5F5;
+  --color-text:          #292929;   /* 12.6:1 → AAA sobre blanco */
+  --color-text-muted:    #525252;   /* 5.9:1 → AA+ sobre blanco (mejor que #696969 para proyección) */
+  --color-text-secondary:#696969;   /* 4.63:1 → AA */
+  --color-accent:        #0C62FB;   /* Slalom Blue — 4.56:1 → AA */
+  --color-accent-hover:  #0A4EC9;
+  --color-navy:          #0F1C41;   /* estructura, header de slide */
+  --color-navy-deep:     #000A25;   /* slide de portada */
+  --color-lime:          #DEFF4D;   /* acento vivo (solo sobre navy) */
+  --color-blue-pale:     #B6D0FE;   /* texto sobre navy */
+
+  /* ── Superficies claras ── */
+  --color-surface:       #FFFFFF;
+  --color-surface-2:     #F5F5F5;
+  --color-surface-3:     #EBEBEB;
+  --color-border:        rgba(15, 28, 65, 0.10);   /* navy α10% — sutil en claro */
+  --color-border-mid:    rgba(15, 28, 65, 0.18);
+
+  /* ── Semánticos claros — OK/WARN/ALARM sobre blanco ── */
+  --color-ok-bg:         rgba(34, 120, 60, 0.07);
+  --color-ok-border:     rgba(34, 120, 60, 0.30);
+  --color-ok-text:       #1a6e32;   /* verde oscuro — ≥4.5:1 sobre blanco */
+
+  --color-warn-bg:       rgba(161, 106, 0, 0.07);
+  --color-warn-border:   rgba(161, 106, 0, 0.30);
+  --color-warn-text:     #7a5100;   /* ámbar oscuro — ≥4.5:1 sobre blanco */
+
+  --color-alarm-bg:      rgba(185, 28, 28, 0.07);
+  --color-alarm-border:  rgba(185, 28, 28, 0.30);
+  --color-alarm-text:    #991b1b;   /* rojo oscuro — ≥4.5:1 sobre blanco */
+
+  /* ── Sombras en capas (elevación sin blur apilado — §12 apple-design) ── */
+  --shadow-sm:   0 1px 2px rgba(0,0,0,0.04), 0 1px 1px rgba(0,0,0,0.03);
+  --shadow-md:   0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.04);
+  --shadow-lg:   0 4px 8px rgba(0,0,0,0.05), 0 12px 24px rgba(0,0,0,0.08);
+
+  /* ── Tipografía display (Apple §15 + inferencia para proyección) ── */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", "SF Mono", ui-monospace, monospace;
+
+  /* ── Timing tokens (§16: solo 3 duraciones, nada ad-hoc) ── */
+  --dur-micro:  150ms;  /* hover/botones */
+  --dur-base:   350ms;  /* spring de slide */
+  --dur-fade:   200ms;  /* reduced-motion cross-fade */
+
+  /* ── Easing ── */
+  --ease-out:  cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.45, 0, 0.55, 1);
+
+  /* ── Spacing (§16: múltiplos de 4px/0.25rem, nada fuera de esta lista) ── */
+  --sp-1:  0.25rem;  /* 4px  */
+  --sp-2:  0.5rem;   /* 8px  */
+  --sp-3:  0.75rem;  /* 12px */
+  --sp-4:  1rem;     /* 16px */
+  --sp-6:  1.5rem;   /* 24px */
+  --sp-8:  2rem;     /* 32px */
+  --sp-12: 3rem;     /* 48px */
+  --sp-16: 4rem;     /* 64px */
+  --sp-24: 6rem;     /* 96px */
+
+  /* ── Radio ── */
+  --radius-sm:   0.375rem;
+  --radius-md:   0.75rem;
+  --radius-lg:   1rem;
+  --radius-pill: 999px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   DECK — contenedor raíz del motor de slides
+   Canvas 16:9 (1280×720) centrado, escalable al viewport con transform:scale().
+   ───────────────────────────────────────────────────────────────────────── */
+
+.deck {
+  position: fixed;
+  inset: 0;
+  background: var(--color-bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-family: var(--font-sans);
+  color: var(--color-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
+}
+
+/* Stage — centra el canvas 16:9 en el viewport */
+.deck-stage {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+  overflow: hidden;
+  position: relative;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   SLIDE WRAPPER — transición horizontal CSS spring
+   Todos los wrappers viven en el mismo grid cell (solapados).
+   La slide activa es visible; las demás están "fuera de pantalla" con translateX.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.slide-wrapper {
+  grid-area: 1 / 1;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  width: 100%;
+  /* CRÍTICO: usar height: 100% + overflow:hidden para no exceder el viewport */
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  /*
+   * B3 fix: posición fuera de pantalla basada en data-position (derivado del índice),
+   * NO en data-direction (estado global). Esto garantiza:
+   *   - future (+100%→0): entrante desde la DERECHA al avanzar ✓
+   *   - past   (-100%→0): entrante desde la IZQUIERDA al retroceder ✓
+   * Valor por defecto = future (fuera a la derecha).
+   */
+  transform: translateX(100%);
+  /*
+   * ACCESIBILIDAD — visibility:hidden con delay para sacar del tab order sin flash:
+   *
+   * Por qué visibility:hidden (y no solo opacity+pointer-events):
+   *   - opacity:0 + pointer-events:none NO retira el subtree del tab order.
+   *   - aria-hidden=true con descendientes enfocables dispara axe aria-hidden-focus
+   *     (WCAG 2.4.3 / 2.4.7, severity: serious).
+   *   - React 18.3.1 no soporta el atributo `inert`, así que usamos CSS.
+   *
+   * Por qué con delay (`0s linear var(--dur-base)`) y no inmediata:
+   *   - visibility NO tiene interpolación: visible→hidden ocurre en frame 0.
+   *   - Si lo aplicamos inmediatamente la slide saliente desaparece en frame 0 → flash.
+   *   - Con `transition-delay = var(--dur-base)` la visibilidad se oculta AL FINAL
+   *     de la transición de transform, cuando la slide ya salió del canvas → sin flash.
+   *
+   * La slide 'present' recupera visibility:visible sin delay (instantáneo).
+   */
+  visibility: hidden;
+  transition:
+    transform var(--dur-base) var(--ease-out),
+    visibility 0s linear var(--dur-base);
+  will-change: transform;
+  /* pointer-events:none también, por defensa en capas */
+  pointer-events: none;
+  /*
+   * MATIZ — opacity:1 en modo normal (no reduced-motion):
+   *   Las slides past/future ya salen del canvas por overflow:hidden de .deck-stage.
+   *   Animar opacity además de transform causa un "lavado" (fondo blanco visible
+   *   durante el cross-fade navy→navy a mitad de la transición).
+   *   Solución: opacity fijo a 1 en modo normal; el fade de opacity SOLO se usa
+   *   en prefers-reduced-motion donde no hay translate.
+   */
+  opacity: 1;
+}
+
+/* Slide presente (activa) — centrada, visible, interactiva */
+.slide-wrapper[data-position="present"] {
+  transform: translateX(0);
+  visibility: visible;          /* inmediata — sin delay */
+  transition:
+    transform var(--dur-base) var(--ease-out),
+    visibility 0s linear 0s;   /* visibility visible en frame 0 */
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Slide pasada (índice < current) — aparcada a la izquierda, fuera del tab order */
+.slide-wrapper[data-position="past"] {
+  transform: translateX(-100%);
+  visibility: hidden;           /* delay heredado de .slide-wrapper base */
+  opacity: 1;
+  pointer-events: none;
+}
+
+/* Slide futura (índice > current) — aparcada a la derecha, fuera del tab order */
+.slide-wrapper[data-position="future"] {
+  transform: translateX(100%);
+  visibility: hidden;           /* delay heredado de .slide-wrapper base */
+  opacity: 1;
+  pointer-events: none;
+}
+
+/* ── Respeto a prefers-reduced-motion — cross-fade 200ms sin transform ── */
+@media (prefers-reduced-motion: reduce) {
+  /*
+   * En reduced-motion no hay translate, así que el delay de visibility puede
+   * ser más corto (var(--dur-fade) = 200ms, duración del cross-fade).
+   * Aquí SÍ usamos opacity para el cross-fade (no hay translate que tape el fondo).
+   */
+  .slide-wrapper {
+    transform: none !important;
+    opacity: 0;
+    transition:
+      opacity var(--dur-fade) ease,
+      visibility 0s linear var(--dur-fade) !important;
+  }
+  /* Slides no-presentes: opacity 0, fuera del tab order */
+  .slide-wrapper[data-position="past"],
+  .slide-wrapper[data-position="future"] {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+  /* Slide activa: cross-fade a opacity 1, visibility inmediata */
+  .slide-wrapper[data-position="present"] {
+    opacity: 1;
+    visibility: visible;
+    transition:
+      opacity var(--dur-fade) ease,
+      visibility 0s linear 0s !important;
+    pointer-events: auto;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   SLIDE INNER — el canvas visual de la slide
+   padding generoso (64–80px per reference_research) para slides de contenido.
+   Las slides que manejan su propio layout (--cover, --closing) reciben padding:0
+   para evitar doble padding.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.slide-inner {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  /* Sin padding aquí — cada .slide--* define el suyo */
+  overflow: hidden;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   SLIDE LAYOUTS — por tipo
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Base — todas las slides */
+.slide {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--sp-8);
+}
+
+/* ── Cover (portada / cierre) — navy profundo con acento lima ── */
+.slide--cover {
+  background: var(--color-navy-deep);
+  color: #FFFFFF;
+  justify-content: center;
+  gap: var(--sp-6);
+  padding: var(--sp-16);
+  border-radius: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Decoración geométrica sutil — trazo navy un poco más claro */
+.slide--cover::before {
+  content: "";
+  position: absolute;
+  right: -8%;
+  bottom: -12%;
+  width: 55%;
+  height: 85%;
+  border: 2px solid rgba(182, 208, 254, 0.08);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.slide-cover__eyebrow {
+  font-size: clamp(0.875rem, 1.5vw, 1.125rem);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-lime);
+  font-optical-sizing: auto;
+}
+
+.slide-cover__subtitle {
+  display: block; /* element changed from p to span — keep block flow */
+  font-size: clamp(1.25rem, 2vw, 1.75rem);
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: -0.005em;
+  color: rgba(182, 208, 254, 0.85);  /* más opaco — mayor contraste para proyección */
+  max-width: 60ch;
+}
+
+.slide-cover__footer {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: center;
+  margin-top: var(--sp-8);
+  font-size: clamp(0.875rem, 1.2vw, 1rem);
+  font-weight: 500;
+  /* B-contraste fix: sube de .55 → .85 para alcanzar ≥4.5:1 sobre #000A25 */
+  color: rgba(182, 208, 254, 0.85);
+  letter-spacing: 0.01em;
+}
+
+.slide-cover__divider { opacity: 0.4; }
+
+/* ── Content (prosa + bullets) ── */
+.slide--content {
+  background: var(--color-bg);
+  justify-content: center;
+  gap: var(--sp-6);
+  padding: var(--sp-16) var(--sp-16);
+}
+
+/* ── Dashboard en vivo ── */
+.slide--dashboard {
+  background: var(--color-bg-alt);
+  justify-content: flex-start;
+  gap: var(--sp-4);
+  /* padding-bottom generoso: el deck-nav flotante (≈52 px) vive a bottom: --sp-8 (32px)
+     → necesitamos ≥ 84px de espacio inferior para que no tape el bento */
+  padding: var(--sp-8) var(--sp-12) var(--sp-24) !important;
+  overflow: hidden;
+}
+
+/* ── Closing (cierre) — similar a portada */
+.slide--closing {
+  background: var(--color-navy);
+  color: #FFFFFF;
+  justify-content: center;
+  gap: var(--sp-6);
+  padding: var(--sp-16);
+  position: relative;
+  overflow: hidden;
+}
+
+.slide--closing::before {
+  content: "";
+  position: absolute;
+  left: -5%;
+  top: -10%;
+  width: 40%;
+  height: 70%;
+  border: 1px solid rgba(182, 208, 254, 0.06);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.slide-closing__eyebrow {
+  font-size: clamp(0.875rem, 1.5vw, 1.125rem);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-lime);
+}
+
+.slide-closing__links {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-top: var(--sp-6);
+}
+
+.slide-closing__link {
+  font-size: clamp(1rem, 1.5vw, 1.25rem);
+  font-weight: 500;
+  color: var(--color-blue-pale);
+  text-decoration: none;
+  letter-spacing: -0.01em;
+  transition: color var(--dur-micro) ease;
+}
+
+.slide-closing__link:hover {
+  color: #FFFFFF;
+  text-decoration: underline;
+}
+
+.slide-closing__footer {
+  margin-top: var(--sp-8);
+  font-size: clamp(0.875rem, 1.2vw, 1rem);
+  font-weight: 500;
+  /* B-contraste fix: sube de .5 → .80 para alcanzar ≥4.5:1 sobre #0F1C41 */
+  color: rgba(182, 208, 254, 0.80);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   TIPOGRAFÍA DISPLAY — escala Apple §15 para proyección
+   Tracking negativo en grande, positivo en pequeño.
+   clamp() respeta zoom/Dynamic Type del navegador.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.slide-h1 {
+  font-size: clamp(3rem, 6vw, 6rem);   /* 48–96px */
+  font-weight: 800;
+  line-height: 1.0;
+  letter-spacing: -0.035em;            /* negativo máximo — §15 literal */
+  font-optical-sizing: auto;
+  color: inherit;
+}
+
+/* Display superlativo — para la portada, peso visual extra */
+.slide-h1--display {
+  font-size: clamp(3.5rem, 7.5vw, 7rem); /* 56–112px */
+  font-weight: 900;
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+}
+
+/* Spans de línea — cada uno ocupa su propia línea */
+.slide-h1__line,
+.slide-h2__line {
+  display: block;
+}
+
+.slide-h2 {
+  font-size: clamp(2rem, 4vw, 3.5rem);  /* 32–56px */
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.025em;
+  font-optical-sizing: auto;
+  color: var(--color-text);
+}
+
+/* h2 inline para el header de la slide del dashboard */
+.slide-h2--inline {
+  font-size: clamp(1.25rem, 2.5vw, 2rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.0;
+}
+
+/* h2 grande para el cierre */
+.slide-h2--large {
+  font-size: clamp(2.5rem, 5vw, 4.5rem);
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 1.0;
+  color: #FFFFFF;
+}
+
+.slide-h3 {
+  font-size: clamp(1.5rem, 2.5vw, 2.25rem); /* 24–36px */
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.015em;
+  font-optical-sizing: auto;
+  color: var(--color-text);
+}
+
+/* Body — bullets/párrafo de slide */
+.slide-body {
+  display: block; /* works for both <p> and <span> (changed in MDX to avoid p-in-p) */
+  font-size: clamp(1.25rem, 2vw, 1.625rem); /* 20–26px — ≥28px efectivo en pantalla */
+  font-weight: 500;                          /* 500 mínimo para proyección diurna */
+  line-height: 1.4;
+  letter-spacing: -0.005em;
+  color: var(--color-text);
+}
+
+/* Lead — primer párrafo, un poco más grande */
+.slide-body--lead {
+  font-size: clamp(1.375rem, 2.5vw, 2rem); /* 22–32px */
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+/* Caption — notas al pie, timestamp, "todo en un monorepo" */
+.slide-body--caption {
+  font-size: clamp(0.875rem, 1.5vw, 1.25rem); /* 14–20px */
+  font-weight: 500;
+  color: var(--color-text-muted);
+  letter-spacing: 0.01em;  /* positivo para texto chico — §15 */
+}
+
+/* Bold dentro del body */
+.slide-strong {
+  font-weight: 700;
+  color: var(--color-navy);
+}
+
+/* Code inline */
+.slide-code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: rgba(15, 28, 65, 0.07);
+  color: var(--color-navy);
+  padding: 0.1em 0.4em;
+  border-radius: 0.25em;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   LISTAS — slide-list
+   ───────────────────────────────────────────────────────────────────────── */
+
+.slide-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: 0;
+}
+
+.slide-list--spacious {
+  gap: var(--sp-6);
+}
+
+.slide-list__item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-4);
+  font-size: clamp(1.125rem, 1.8vw, 1.5rem); /* 18–24px */
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: -0.005em;
+  color: var(--color-text);
+}
+
+/* Bullet decorativo — acento azul Slalom */
+.slide-list__item::before {
+  content: "";
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  margin-top: 0.6em;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   DECK NAV — controles flotantes
+   Toolbar translúcida en la parte inferior — elev-3 §12 apple-design
+   ───────────────────────────────────────────────────────────────────────── */
+
+.deck-nav {
+  position: fixed;
+  bottom: var(--sp-8);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+
+  background: rgba(255, 255, 255, 0.78);  /* más opaco que dark (§12 apple-design) */
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: var(--shadow-lg);          /* elev-3 */
+
+  @supports not (backdrop-filter: blur(1px)) {
+    background: rgba(255, 255, 255, 0.97);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .deck-nav {
+    background: #FFFFFF;
+    backdrop-filter: none;
+  }
+}
+
+.deck-nav__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: var(--radius-pill);
+  border: none;
+  background: transparent;
+  color: var(--color-navy);
+  font-size: 1.5rem;
+  font-weight: 600;
+  cursor: pointer;
+  line-height: 1;
+  transition: background var(--dur-micro) ease, color var(--dur-micro) ease;
+}
+
+.deck-nav__btn:hover:not(:disabled) {
+  background: rgba(15, 28, 65, 0.07);
+  color: var(--color-accent);
+}
+
+.deck-nav__btn:active:not(:disabled) {
+  background: rgba(15, 28, 65, 0.12);
+  transform: scale(0.94);
+  transition-duration: 80ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deck-nav__btn:active { transform: none; }
+}
+
+.deck-nav__btn:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+.deck-nav__btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.deck-nav__btn--fs {
+  font-size: 1.1rem;
+}
+
+.deck-nav__counter {
+  font-size: 0.8125rem;   /* 13px */
+  font-weight: 600;
+  color: var(--color-text-muted);
+  letter-spacing: 0.04em;
+  min-width: 3.5rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   PROGRESS BAR — borde inferior, 4px, estilo Slalom
+   ───────────────────────────────────────────────────────────────────────── */
+
+.deck-progress {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: rgba(15, 28, 65, 0.08);
+  z-index: 200;
+}
+
+.deck-progress__fill {
+  height: 100%;
+  background: var(--color-accent);
+  transition: width var(--dur-base) var(--ease-out);
+  border-radius: 0 2px 2px 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deck-progress__fill {
+    transition: width 0ms;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   LIVE BADGE — "● Live" en la slide del dashboard
+   ───────────────────────────────────────────────────────────────────────── */
+
+.slide-live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 0.8125rem;   /* 13px */
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-ok-text);
+  background: var(--color-ok-bg);
+  border: 1px solid var(--color-ok-border);
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--radius-pill);
+}
+
+/* Punto pulsante — animación del "●" */
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+
+.slide-live-badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-ok-text);
+  animation: live-pulse 2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slide-live-badge::before {
+    animation: none;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   SLIDE DASHBOARD HEADER
+   ───────────────────────────────────────────────────────────────────────── */
+
+.slide-dashboard__header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  flex-shrink: 0;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   LIVE DASHBOARD — Bento grid
+   GoldenPath + SelfHealing son protagonistas (≥2/3 del espacio).
+   FleetHealth es soporte (barra lateral más estrecha).
+   ───────────────────────────────────────────────────────────────────────── */
+
+.live-dashboard {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  grid-template-rows: 1fr;
+  gap: var(--sp-4);
+  flex: 1;
+  min-height: 0;  /* permite que el grid no desborde en flex */
+  overflow: hidden;
+}
+
+/* Protagonistas — ocupa la columna izquierda */
+.bento-hero {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-4);
+  min-height: 0;
+  overflow: hidden;
+  align-self: stretch;      /* ocupa el alto completo de la fila del live-dashboard */
+}
+
+/* Soporte — columna derecha */
+.bento-support {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  align-self: stretch;
+}
+
+/* Tarjeta base del bento */
+.bento-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;           /* NO overflow:auto aquí — la sombra exterior no debe recortarse */
+  padding: var(--sp-4) var(--sp-6);
+  display: flex;
+  flex-direction: column;
+}
+
+/* Wrapper interno para el contenido scrolleable.
+   overflow + scrollbar viven aquí, separados de la sombra exterior. */
+.bento-card__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 28, 65, 0.15) transparent;
+}
+
+.bento-card__scroll::-webkit-scrollbar { width: 4px; }
+.bento-card__scroll::-webkit-scrollbar-track { background: transparent; }
+.bento-card__scroll::-webkit-scrollbar-thumb { background: rgba(15, 28, 65, 0.15); border-radius: 2px; }
+
+/* GoldenPath — color de acento azul, borde protagonista */
+.bento-card--golden {
+  border-color: rgba(12, 98, 251, 0.28);
+}
+
+/* SelfHealing — color de acento navy, borde protagonista */
+.bento-card--healing {
+  border-color: rgba(15, 28, 65, 0.28);
+}
+
+/* FleetHealth — soporte, borde más suave */
+.bento-card--fleet {
+  flex: 1;
+  border-color: rgba(15, 28, 65, 0.10);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   ADAPTACIONES DE LOS COMPONENTES EXISTENTES EN CONTEXTO BENTO
+   Solo ajustes de layout/tamaño; no tocamos la lógica de datos.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Dentro del bento, las views no tienen padding extra */
+.bento-card .view {
+  padding: 0;
+}
+
+/* Headers más compactos en el bento */
+.bento-card .view__header {
+  margin-bottom: var(--sp-4);
+  padding-bottom: var(--sp-3);
+}
+
+.bento-card .view__header h2 {
+  font-size: 1rem;            /* compacto para el bento */
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--color-text);   /* negro sobre blanco — contraste AAA */
+}
+
+/* Iconos en los headers del bento */
+.bento-card .view__header h2 svg {
+  color: var(--color-accent);
+}
+
+/* Metric cards más compactas */
+.bento-card .metrics-grid {
+  grid-template-columns: 1fr;
+  gap: var(--sp-3);
+}
+
+.bento-card .metric-card {
+  padding: var(--sp-3) var(--sp-4);
+  gap: var(--sp-2);
+  /* Tema claro */
+  background: var(--color-surface-2);
+  border-color: var(--color-border);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Números de KPI más pequeños en bento */
+.bento-card .metric-card__number {
+  font-size: clamp(1.5rem, 3vw, 2rem);
+}
+
+/* Info cards */
+.bento-card .info-card {
+  background: var(--color-surface-2);
+  border-color: var(--color-border);
+  box-shadow: var(--shadow-sm);
+  padding: var(--sp-3) var(--sp-4);
+  gap: var(--sp-2);
+}
+
+/* Golden path content en columna, no grid */
+.bento-card .golden-path__content {
+  grid-template-columns: 1fr;
+  gap: var(--sp-3);
+}
+
+/* Timeline más compacta */
+.bento-card .timeline {
+  gap: var(--sp-2);
+}
+
+.bento-card .timeline-event {
+  padding: var(--sp-2) var(--sp-3);
+  font-size: 0.8125rem;
+  background: var(--color-surface-2);
+  border-color: var(--color-border);
+}
+
+/* Self-healing sections más compactas */
+.bento-card .self-healing__section {
+  margin-bottom: var(--sp-4);
+}
+
+.bento-card .self-healing__section h3 {
+  font-size: 0.6875rem;
+  margin-bottom: var(--sp-2);
+  color: var(--color-text-muted);
+}
+
+/* Crew roles en bento */
+.bento-card .crew-roles-context {
+  background: var(--color-surface-2);
+  border-color: var(--color-border);
+  padding: var(--sp-3) var(--sp-4);
+}
+
+.bento-card .crew-roles-list {
+  font-size: 0.8125rem;
+  gap: var(--sp-2);
+}
+
+/* Circuit breakers en bento */
+.bento-card .circuit-breakers-grid {
+  grid-template-columns: 1fr;
+  gap: var(--sp-2);
+}
+
+.bento-card .circuit-breaker-card {
+  background: var(--color-surface-2);
+  border-color: var(--color-border);
+  padding: var(--sp-2) var(--sp-3);
+  gap: var(--sp-2);
+}
+
+/* Badges en tema claro — override */
+.deck .badge--green {
+  color: var(--color-ok-text);
+  background: var(--color-ok-bg);
+  border-color: var(--color-ok-border);
+}
+
+.deck .badge--red {
+  color: var(--color-alarm-text);
+  background: var(--color-alarm-bg);
+  border-color: var(--color-alarm-border);
+}
+
+.deck .badge--gray {
+  color: var(--color-text-secondary);
+  background: rgba(15, 28, 65, 0.05);
+  border-color: var(--color-border-mid);
+}
+
+/* Connection badges en tema claro */
+.deck .connection-badge--connected {
+  color: var(--color-ok-text);
+  background: var(--color-ok-bg);
+  border-color: var(--color-ok-border);
+}
+
+.deck .connection-badge--connecting {
+  color: var(--color-warn-text);
+  background: var(--color-warn-bg);
+  border-color: var(--color-warn-border);
+}
+
+.deck .connection-badge--error {
+  color: var(--color-alarm-text);
+  background: var(--color-alarm-bg);
+  border-color: var(--color-alarm-border);
+}
+
+.deck .connection-badge {
+  background: var(--color-surface-2);
+  border-color: var(--color-border-mid);
+  color: var(--color-text-muted);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   FALLBACK DIGNO — estados vacíos en el bento en vivo
+   Sin alertas rojas; placeholder sobrio, neutro, elegante.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Override para .empty-state dentro del bento */
+.bento-card .empty-state {
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  font-style: normal;          /* sin itálica — más sobrio */
+  font-weight: 500;
+  padding: var(--sp-6) var(--sp-4);
+  text-align: center;
+  background: rgba(15, 28, 65, 0.02);
+  border: 1px dashed rgba(15, 28, 65, 0.12);
+  border-radius: var(--radius-md);
+  letter-spacing: 0.01em;     /* caption tracking positivo — §15 */
+}
+
+/* Las alertas de warn y degraded NO muestran el amarillo alarmante en la slide proyectada */
+.bento-card .alert--warn,
+.bento-card .alert--degraded {
+  background: rgba(15, 28, 65, 0.03);
+  border: 1px dashed rgba(15, 28, 65, 0.12);
+  color: var(--color-text-muted);
+  font-size: 0.8125rem;
+  font-style: normal;
+}
+
+/* Suprimir el emoji ⚠️ en el bento para look más limpio */
+.bento-card .alert--warn::before {
+  display: none;
+}
+
+/* placeholder-note en el bento — sin fondo azul */
+.bento-card .placeholder-note {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  background: rgba(15, 28, 65, 0.03);
+  border: 1px dashed rgba(15, 28, 65, 0.10);
+  border-radius: var(--radius-sm);
+}
+
+/* Spinner en tema claro */
+.deck .spinner {
+  border-color: rgba(15, 28, 65, 0.15) !important;
+  border-top-color: var(--color-accent) !important;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   OVERRIDES GLOBALES DE COLORES PARA TEMA CLARO
+   Los componentes existentes usan variables dark; aquí las reemplazamos.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Links en tema claro — sobre fondo blanco/claro */
+.deck a {
+  color: var(--color-accent);
+}
+
+.deck a:hover {
+  color: var(--color-accent-hover);
+}
+
+/*
+ * B-contraste fix: links sobre fondos navy/oscuros (slide de cierre, portada).
+ * --color-accent (#0C62FB) da sólo 3.29:1 sobre navy #0F1C41 → falla AA.
+ * --color-blue-pale (#B6D0FE) da ~8.1:1 sobre navy → pasa AAA.
+ * Aplicamos al .slide--closing y .slide--cover que tienen background navy.
+ */
+.slide--closing a,
+.slide--cover a {
+  color: var(--color-blue-pale);
+}
+
+.slide--closing a:hover,
+.slide--cover a:hover {
+  color: #FFFFFF;
+  text-decoration: underline;
+}
+
+/* Code en tema claro */
+.deck code {
+  background: rgba(15, 28, 65, 0.06);
+  color: var(--color-navy);
+}
+
+/* last-update en tema claro */
+.deck .last-update {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+/* Metric card status en tema claro */
+.deck .metric-card.status-ok   { background: var(--color-ok-bg);   border-color: var(--color-ok-border) !important; }
+.deck .metric-card.status-warn { background: var(--color-warn-bg); border-color: var(--color-warn-border) !important; }
+.deck .metric-card.status-alarm { background: var(--color-alarm-bg); border-color: var(--color-alarm-border) !important; }
+
+.deck .status-ok__label   { color: var(--color-ok-text); }
+.deck .status-warn__label { color: var(--color-warn-text); }
+.deck .status-alarm__label { color: var(--color-alarm-text); }
+
+/* PR card en tema claro */
+.deck .pr-card {
+  background: rgba(12, 98, 251, 0.05);
+  border-color: rgba(12, 98, 251, 0.20);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   FULLSCREEN — ajustes cuando .deck[data-fullscreen="true"]
+   ───────────────────────────────────────────────────────────────────────── */
+
+.deck[data-fullscreen="true"] .deck-nav {
+  bottom: var(--sp-6);
+}
+
+.deck[data-fullscreen="true"] .slide--dashboard {
+  padding: var(--sp-6) var(--sp-8) var(--sp-24) !important;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   RESPONSIVE — ajustes para pantallas pequeñas (no prioritario para slides)
+   ───────────────────────────────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  .live-dashboard {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr auto;
+  }
+
+  .bento-hero {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .slide-inner {
+    padding: var(--sp-8) var(--sp-8);
+  }
+}
+
+@media (max-width: 600px) {
+  .bento-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .slide-h1--display {
+    font-size: clamp(2.5rem, 10vw, 5rem);
+  }
+
+  .deck-nav {
+    bottom: var(--sp-4);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   FASE 2 — Animaciones, elevación jerárquica, tipografía protagonistas
+   apple-design §3, §4, §8, §12, §14, §15, §16
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────────────────────
+   ELEVACIÓN JERÁRQUICA — material weight encodes hierarchy (§12)
+   Protagonistas (golden, healing): shadow-lg — presencia alta, borde de acento visible.
+   Soporte (fleet): shadow-sm — casi plano, borde más suave.
+   El mask-image fue movido al .bento-card__scroll interno para que NO recorte
+   la box-shadow exterior de la tarjeta protagonista.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.bento-card--golden,
+.bento-card--healing {
+  box-shadow: var(--shadow-lg);
+  /* border-color viene de los modificadores de la sección base (0.28 alpha) */
+}
+
+.bento-card--fleet {
+  box-shadow: var(--shadow-sm);
+  /* border-color viene del modificador base (0.10 alpha) — menos definido */
+}
+
+/* Scroll edge — fade interior en el wrapper scrolleable, NO en la tarjeta exterior.
+   Así la box-shadow de la tarjeta no se ve afectada por el mask (§12 literal). */
+.bento-card--golden .bento-card__scroll,
+.bento-card--healing .bento-card__scroll {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black 10px,
+    black calc(100% - 10px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    black 10px,
+    black calc(100% - 10px),
+    transparent 100%
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   BADGE COLOR TRANSITIONS — CSS smooth (no spring JS needed for color)
+   damping 1.0 semántico → --dur-base (350ms) + --ease-out, sin rebote (§4)
+   Se aplica a cualquier .badge-status en el deck para OK→WARN→ALARM y
+   passing→failing→unknown.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.deck .badge-status {
+  transition:
+    background-color var(--dur-base) var(--ease-out),
+    color            var(--dur-base) var(--ease-out),
+    border-color     var(--dur-base) var(--ease-out);
+}
+
+/* metric-card status color también transiciona suavemente */
+.deck .metric-card {
+  transition:
+    background-color var(--dur-base) var(--ease-out),
+    border-color     var(--dur-base) var(--ease-out);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   TIPOGRAFÍA PROTAGONISTAS — §15: weight + size + tracking como conjunto
+   GoldenPath (pipeline badge/número) y SelfHealing (attempts/counter) destacan.
+   FleetHealth (soporte) explícito un escalón abajo.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Números protagonistas — pipeline (GoldenPath), attempts counter (SelfHealing) */
+.bento-card--golden .metric-card__number,
+.bento-card--healing .metric-card__number,
+.bento-card--healing .circuit-breaker-card__counter strong {
+  font-size: clamp(1.75rem, 3.5vw, 2.5rem);
+  font-weight: 800;
+  letter-spacing: -0.02em; /* tracking negativo — §15 */
+  font-variant-numeric: tabular-nums; /* no layout-jitter durante count-up */
+}
+
+/* Fleet Health — soporte, un escalón abajo (explícito, no heredado) */
+.bento-card--fleet .metric-card__number {
+  font-size: clamp(1.5rem, 3vw, 2rem);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Badge protagonista — un poco más grande para dar peso visual en proyección */
+.bento-card--golden .badge,
+.bento-card--healing .badge {
+  font-size: 0.9375rem; /* 15px vs 13px base — un escalón */
+  font-weight: 700;
+  padding: var(--sp-1) var(--sp-4);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   STAGGER DE ENTRADA DEL BENTO — §8, §6, §14
+   Scoped a [data-active="true"] para que se dispare CADA VEZ que se entra
+   a la slide 03, no solo en el primer montaje (hallazgo de arquitectura
+   de apple_research: las slides nunca se desmontan).
+   Orden: golden (0ms) → healing (70ms) → fleet (140ms)
+   — protagonistas primero para dirigir la mirada (§8 restraint).
+   ───────────────────────────────────────────────────────────────────────── */
+
+@keyframes bento-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Se dispara cuando la slide-wrapper pasa de data-active=false a true.
+   CSS reinicia el keyframe cada vez que la declaración animation aparece
+   (data-active toggle → regla aplicada/quitada → keyframe reiniciado). */
+.slide-wrapper[data-active="true"] .bento-card {
+  animation: bento-enter var(--dur-base) var(--ease-out) backwards;
+}
+
+.slide-wrapper[data-active="true"] .bento-hero .bento-card--golden {
+  animation-delay: 0ms;
+}
+
+.slide-wrapper[data-active="true"] .bento-hero .bento-card--healing {
+  animation-delay: 70ms;
+}
+
+.slide-wrapper[data-active="true"] .bento-support .bento-card--fleet {
+  animation-delay: 140ms;
+}
+
+/* prefers-reduced-motion: sin stagger, sin translate — cross-fade simple (§14) */
+@media (prefers-reduced-motion: reduce) {
+  .slide-wrapper[data-active="true"] .bento-card {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   TIMELINE EVENT FADE-IN — eventos nuevos aparecen suavemente
+   .timeline-event--enter se aplica desde el componente React.
+   prefers-reduced-motion: sin animación.
+   ───────────────────────────────────────────────────────────────────────── */
+
+@keyframes timeline-event-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.timeline-event--enter {
+  animation: timeline-event-in var(--dur-base) var(--ease-out) backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .timeline-event--enter {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   PROGRESS BAR — quitar transition CSS del width para no pelear con el
+   spring JS de useSpring en CircuitBreakerCard (el spring ya la anima).
+   ───────────────────────────────────────────────────────────────────────── */
+
+.bento-card .progress-bar {
+  /* No CSS transition — width is driven by useSpring in the component */
+  transition: none;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   FASE 3A — Interactividad, marca Slalom, navegación no-lineal
+   apple-design §1, §4, §7, §8, §11, §12, §15, §16
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────────────────────
+   MARCA SLALOM — navy más vivo (del PDF Slalom)
+   #002EAE — Ratios WCAG calculados:
+     Blanco sobre navy:          ≈10.5:1 → ✅ AAA (≥7:1)
+     --color-blue-pale (#B6D0FE) sobre navy: ≈6.7:1 → ⚠️ AA (pierde AAA vs. antes)
+     --color-lime (#DEFF4D) sobre navy:      ≈9.25:1 → ✅ AAA
+     Navy como texto sobre blanco:           ≈10.5:1 → ✅ AAA
+   Nota: --color-navy-deep (#000A25, portada) NO se toca — da contraste máximo.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.deck {
+  --color-navy: #002EAE;
+
+  /* ── Paleta de marca — 4 barras verticales (restraint: solo portada y cierre) ── */
+  --color-lime:     #DEFF4D; /* ✅ confirmado de slalom.com (ya existía) */
+  --color-lavender: #C3B8FF; /* aproximación Slalom-coherente */
+  --color-coral:    #FF6F5E; /* aproximación Slalom-coherente */
+  --color-cyan:     #37D5E0; /* aproximación Slalom-coherente */
+
+  /* ── Tipografía display: Poppins para headings, Inter para body ── */
+  --font-display: "Poppins", "Inter", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+
+  /* ── Hover shadow token — un escalón sobre --shadow-md ── */
+  --shadow-hover: 0 8px 16px rgba(0,0,0,0.07), 0 16px 32px rgba(0,0,0,0.09);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   TIPOGRAFÍA — Poppins en headings/display, Inter en body
+   Poppins es más geométrica y ancha que Inter → se afloja el tracking negativo
+   en h1 de -0.035em/-0.04em a -0.02em/-0.025em para dar aire sin perderse.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.slide-h1,
+.slide-h1--display,
+.slide-h2,
+.slide-h2--inline,
+.slide-h2--large,
+.slide-h3 {
+  font-family: var(--font-display);
+}
+
+/* Poppins más ancha — ajuste de tracking para no quedar apretada en display */
+.slide-h1 {
+  letter-spacing: -0.02em;
+}
+
+.slide-h1--display {
+  letter-spacing: -0.025em;
+}
+
+/* body / captions / code → siguen en Inter (--font-sans) — no se toca */
+
+/* ─────────────────────────────────────────────────────────────────────────
+   BENTO CLICKEABLE — hover elevación + press scale (A §1a/1b)
+   Protagonistas GoldenPath y SelfHealing son los que tienen role=button.
+   FleetHealth (soporte) no es clickeable; NO se añade la clase.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.bento-card--clickable {
+  cursor: pointer;
+  transition:
+    transform   var(--dur-micro) var(--ease-out),
+    box-shadow  var(--dur-micro) var(--ease-out);
+  /* Para que el outline de focus-visible no se recorte */
+  outline-offset: 2px;
+}
+
+.bento-card--clickable:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-hover);
+}
+
+.bento-card--clickable:active {
+  transform: translateY(-2px) scale(0.97);
+  transition:
+    transform   100ms ease-out,
+    box-shadow  100ms ease-out;
+}
+
+/* focus-visible — mismo token que .deck-nav__btn:focus-visible (consistencia) */
+.bento-card--clickable:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Tarjeta oculta mientras está abierto su overlay: invisible pero en el DOM
+   (getBoundingClientRect necesita que siga montada para el retorno de foco) */
+.bento-card--clickable[data-hidden="true"] {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* prefers-reduced-motion: sin transforms, solo cambio sutil de sombra */
+@media (prefers-reduced-motion: reduce) {
+  .bento-card--clickable {
+    transition: box-shadow var(--dur-micro) ease;
+  }
+  .bento-card--clickable:hover {
+    transform: none;
+    box-shadow: var(--shadow-hover);
+  }
+  .bento-card--clickable:active {
+    transform: none;
+    box-shadow: var(--shadow-md);
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   FOCUS MODE — centered panel with simple scale+opacity spring (A1 simple)
+   Layout FIXED (never animated). Animation is ONLY transform + opacity.
+   No FLIP, no rect measurement. transform-origin: center.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Scrim — fondo semitransparente detrás del overlay */
+.bento-focus-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 290;
+  background: rgba(0, 46, 174, 0.12); /* navy α12% — sutil, corporativo */
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  /* NORMAL mode: fade-in animation OUTSIDE the media query (inverted fix) */
+  animation: scrim-in var(--dur-base) var(--ease-out) forwards;
+}
+
+.bento-focus-scrim[data-closing="true"] {
+  animation: scrim-out var(--dur-fade) ease forwards;
+}
+
+@keyframes scrim-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes scrim-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .bento-focus-scrim {
+    background: rgba(0, 46, 174, 0.20);
+  }
+}
+
+/* Overlay — el panel expandido, tamaño fijo, animado solo via transform */
+.bento-focus-overlay {
+  position: fixed;
+  /* Layout final: centrado, ~92vw x 88vh con margen generoso */
+  left: 4vw;
+  top: 6vh;
+  width: 92vw;
+  height: 88vh;
+  z-index: 300;
+
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--color-border-mid);
+  overflow: hidden;
+  /* A1: both transform (scale) and opacity are animated by the spring */
+  will-change: transform, opacity;
+
+  display: flex;
+  flex-direction: column;
+}
+
+/* A1 — prefers-reduced-motion: INSIDE media query.
+   useSpring snaps to target immediately; we only cross-fade opacity via CSS.
+   Scale is NOT applied (transform is still set by inline style, but useSpring
+   returns the target immediately so it stays at scale(1) / scale(0.96) with
+   no visible motion). The CSS animation provides the fade as a fallback. */
+@media (prefers-reduced-motion: reduce) {
+  .bento-focus-overlay {
+    /* Opacity spring snaps to 1 immediately; provide CSS fade as reinforcement */
+    animation: scrim-in var(--dur-fade) ease forwards;
+  }
+  .bento-focus-overlay[data-closing="true"] {
+    animation: scrim-out var(--dur-fade) ease forwards;
+  }
+  /* Scrim also uses the simpler fade in reduced-motion */
+  .bento-focus-scrim {
+    animation: scrim-in var(--dur-fade) ease forwards;
+  }
+  .bento-focus-scrim[data-closing="true"] {
+    animation: scrim-out var(--dur-fade) ease forwards;
+  }
+}
+
+/* B3 fix: hide deck chrome (.deck-nav, .deck-progress) while focus-mode is open.
+   The body attribute is set/removed by FocusOverlay's mount/unmount effect. */
+body[data-focus-open="true"] .deck-nav,
+body[data-focus-open="true"] .deck-progress {
+  /* visibility:hidden keeps the space but removes from tab order and painting */
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* Botón de cierre — esquina superior derecha */
+.bento-focus-overlay__close {
+  position: absolute;
+  top: var(--sp-4);
+  right: var(--sp-4);
+  z-index: 10;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: var(--radius-pill);
+  border: none;
+  background: rgba(15, 28, 65, 0.07);
+  color: var(--color-text-muted);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background var(--dur-micro) ease,
+    color      var(--dur-micro) ease;
+  flex-shrink: 0;
+}
+
+.bento-focus-overlay__close:hover {
+  background: rgba(15, 28, 65, 0.12);
+  color: var(--color-text);
+}
+
+.bento-focus-overlay__close:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Contenido interno del overlay — scrolleable */
+.bento-focus-overlay__content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-8) var(--sp-8) var(--sp-8);
+  /* Dejar espacio para el botón de cierre */
+  padding-top: calc(var(--sp-8) + 2.5rem);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 28, 65, 0.15) transparent;
+}
+
+.bento-focus-overlay__content::-webkit-scrollbar { width: 4px; }
+.bento-focus-overlay__content::-webkit-scrollbar-track { background: transparent; }
+.bento-focus-overlay__content::-webkit-scrollbar-thumb {
+  background: rgba(15, 28, 65, 0.15);
+  border-radius: 2px;
+}
+
+/* Dentro del overlay: los componentes tienen más espacio — escala visual mayor */
+.bento-focus-overlay__content .view__header h2 {
+  font-size: clamp(1.25rem, 2.5vw, 1.75rem);
+}
+
+.bento-focus-overlay__content .golden-path__content {
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-6);
+}
+
+.bento-focus-overlay__content .metric-card__number,
+.bento-focus-overlay__content .circuit-breaker-card__counter strong {
+  font-size: clamp(2rem, 4vw, 3rem);
+  font-weight: 800;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   DOT-NAV — fila de puntos en el chrome del deck (B §2a)
+   Discreta, Slalom-sobria, no distractor.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Contenedor central del nav — agrupa counter + dots */
+.deck-nav__center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.deck-dotnav {
+  display: flex;
+  align-items: center;
+  /* A5 — WCAG 2.2 AA 2.5.8: tap target centers must be ≥ 12px apart.
+     Visual dot = 6px; active ≈ 8.4px. gap: 12px → center-to-center = 18px ✓
+     (previous value was 8px → 14px — already passing, now improved to 18px). */
+  gap: 12px;
+}
+
+.deck-dotnav__dot {
+  /* Visual size */
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: rgba(15, 28, 65, 0.18);
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  /* WCAG 2.2 AA 2.5.8 — 18px tap target via inset negative padding on pseudo-element.
+     The pseudo extends the hit area to 18×18px (inset: -6px on each side). */
+  position: relative;
+  transition:
+    background var(--dur-micro) ease-out,
+    transform  var(--dur-micro) ease-out;
+}
+
+/* Área de toque 18×18px — WCAG 2.2 AA 2.5.8 */
+.deck-dotnav__dot::before {
+  content: "";
+  position: absolute;
+  /* A5: inset -9px → hit area = 6px visual + 2×9px = 24px × 24px ≥ 18px ✓ */
+  inset: -9px;
+}
+
+.deck-dotnav__dot[data-active="true"] {
+  background: var(--color-accent);
+  transform: scale(1.4);
+}
+
+.deck-dotnav__dot:hover:not([data-active="true"]) {
+  background: rgba(15, 28, 65, 0.35);
+  transform: scale(1.2);
+}
+
+.deck-dotnav__dot:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deck-dotnav__dot {
+    transition: background var(--dur-fade) ease;
+  }
+  .deck-dotnav__dot[data-active="true"],
+  .deck-dotnav__dot:hover {
+    transform: none;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   4 BARRAS VERTICALES DE MARCA — portada (izquierda) y cierre (derecha)
+   Restraint: solo slides "bookend", nunca en slides de contenido/dashboard.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.brand-bars {
+  position: absolute;
+  inset-block: 0; /* top:0 y bottom:0 */
+  width: 32px;
+  display: flex;
+  flex-direction: row;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.brand-bars span {
+  flex: 1;
+  display: block;
+}
+
+.brand-bars span:nth-child(1) { background: var(--color-lime); }
+.brand-bars span:nth-child(2) { background: var(--color-lavender); }
+.brand-bars span:nth-child(3) { background: var(--color-coral); }
+.brand-bars span:nth-child(4) { background: var(--color-cyan); }
+
+/* Portada — barras en el borde izquierdo */
+.slide--cover .brand-bars {
+  left: 0;
+}
+
+/* Cierre — barras en el borde derecho (simetría de bookends) */
+.slide--closing .brand-bars {
+  right: 0;
+}
+
+/* La decoración ::before circular de portada y cierre convive con las barras —
+   posición absoluta diferente, no compiten */
+
+/* ─────────────────────────────────────────────────────────────────────────
+   LINKS REALES EN EL BENTO — visiblemente clickeables (A §2)
+   GoldenPath lastRun.url y SelfHealing pr.url ya son <a> en el código;
+   aquí les damos feedback visual claro dentro del bento oscuro/claro.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Link dentro de run-details o pr-card — subrayado visible + hover */
+.bento-card .run-details a,
+.bento-card .pr-card a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  padding: 0.05em 0.2em;
+  transition: background var(--dur-micro) ease, color var(--dur-micro) ease;
+}
+
+.bento-card .run-details a:hover,
+.bento-card .pr-card a:hover {
+  background: rgba(12, 98, 251, 0.08);
+  color: var(--color-accent-hover);
+}
+
+.bento-card .run-details a:focus-visible,
+.bento-card .pr-card a:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Dentro del overlay expandido — links también visibles */
+.bento-focus-overlay__content .run-details a,
+.bento-focus-overlay__content .pr-card a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 600;
+}
+
+.bento-focus-overlay__content .run-details a:hover,
+.bento-focus-overlay__content .pr-card a:hover {
+  color: var(--color-accent-hover);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   BENTO CARD EXPAND BUTTON — B1/B2 fix
+   Visible "Expand" button in the top-right corner of protagonist cards.
+   This is the accessible trigger for focus-mode (carries aria-expanded,
+   aria-controls). The card body click is a secondary affordance.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.bento-card {
+  /* Needed for absolute positioning of the expand button */
+  position: relative;
+}
+
+.bento-card__expand-btn {
+  position: absolute;
+  top: var(--sp-2);
+  right: var(--sp-2);
+  z-index: 5;
+
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+
+  height: 1.75rem;
+  padding: 0 var(--sp-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border-mid);
+  background: rgba(255, 255, 255, 0.80);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  letter-spacing: 0.02em;
+  cursor: pointer;
+
+  transition:
+    background  var(--dur-micro) ease,
+    color       var(--dur-micro) ease,
+    border-color var(--dur-micro) ease;
+
+  /* Ensure tap target >= 18px height (WCAG 2.5.8) */
+  min-height: 1.75rem; /* 28px */
+}
+
+.bento-card__expand-btn:hover {
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--color-text);
+  border-color: var(--color-border-mid);
+}
+
+.bento-card__expand-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.bento-card__expand-btn-label {
+  font-size: 0.6875rem; /* 11px — compact */
+}
+
+/* In the hidden card (overlay open over it) hide the expand button too */
+.bento-card--clickable[data-hidden="true"] .bento-card__expand-btn {
+  pointer-events: none;
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  .bento-card__expand-btn {
+    background: rgba(255, 255, 255, 0.97);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .bento-card__expand-btn {
+    background: #FFFFFF;
+    backdrop-filter: none;
+  }
+}
+
+/* ── A3: sr-only-heading — visually hidden but accessible heading ───────────
+   Used by FocusableCard to give role=group a valid aria-labelledby target
+   without duplicating the visual heading already inside the child component. */
+.sr-only-heading {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

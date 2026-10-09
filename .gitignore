@@ -56,3 +56,11 @@ htmlcov/
 .idea/
 *.swp
 *.swo
+
+# ─── Playwright MCP screenshots (herramienta de desarrollo local) ────────────
+.playwright-mcp/
+web-dashboard/.playwright-mcp/
+# Capturas sueltas de Playwright en la raíz del repo
+dashboard-*.png
+playwright-0*.png
+slide-0*.png
