@@ -13,8 +13,31 @@
  * Phase 3A additions:
  *   - DotNav: discrete dot row below the slide counter, one per slide,
  *     aria-current on active, keyboard-navigable (Tab + Enter/Space).
- *   - Keys 1-9: jump directly to slide N. Direction is derived automatically
- *     by SlideWrapper (index vs current) — no extra logic needed.
+ *   - Keys 1-9: jump directly to slide N.
+ *
+ * Sub-step coordination — CONTEXT-BASED (remount fix):
+ *
+ *   ROOT CAUSE of previous remount: buildMdxComponents was called with
+ *   deps=[current, subSteps], creating a NEW BoundArchDiagram function type
+ *   on every step change. React unmounts and remounts components when their
+ *   type reference changes inside MDXProvider.
+ *
+ *   FIX: the MDX component map is built ONCE via useMemo(deps=[]) — stable
+ *   identity across all renders. The ArchitectureDiagram reads the current
+ *   sub-step via SubStepContext instead of props. The Deck wraps MDXProvider
+ *   in <SubStepContext.Provider value={ctxValue}> where ctxValue updates on
+ *   every step change. The diagram re-reads context → re-renders without
+ *   unmounting. The aria-live region is the SAME DOM node across steps.
+ *
+ *   Pattern scales to diagrams B and C: each diagram registers itself in
+ *   SLIDE_REGISTRY (in slides.ts — single source of truth) with an explicit
+ *   slideIndex and stepCount. No findIndex fragility.
+ *
+ * SLIDE_REGISTRY (explicit slide→diagram mapping) — defined in slides.ts:
+ *   Maps slideIndex → { stepCount } so that:
+ *   - stepCount: how many sub-steps this slide has (0 = none).
+ *   This is the SINGLE SOURCE OF TRUTH; SLIDE_STEP_COUNTS is derived from it
+ *   so they can never diverge. Deck.tsx imports SLIDE_REGISTRY from slides.ts.
  */
 
 import React, {
@@ -25,16 +48,37 @@ import React, {
   useMemo,
 } from "react";
 import { MDXProvider } from "@mdx-js/react";
-import { SLIDES, SLIDE_TITLES } from "./slides.js";
+import { SLIDES, SLIDE_TITLES, SLIDE_REGISTRY, ARCH_SLIDE_INDEX, CREW_SLIDE_INDEX } from "./slides.js";
 import { LiveDashboard } from "../presentation/LiveDashboard.js";
+import {
+  ArchitectureDiagram,
+  SubStepContext,
+} from "../presentation/ArchitectureDiagram.js";
+import { CrewDiagram, CrewSubStepContext } from "../presentation/CrewDiagram.js";
 import type { MDXComponents } from "mdx/types";
 
 // ---------------------------------------------------------------------------
-// MDX component map — disponible en todos los .mdx sin import local
+// SLIDE_REGISTRY — imported from slides.ts (single source of truth).
+// Deck reads it here to drive sub-step navigation without duplicating the data.
+// To add a diagram B or C, add it to slides.ts SLIDE_REGISTRY.
 // ---------------------------------------------------------------------------
 
-const mdxComponents: MDXComponents = {
+// ---------------------------------------------------------------------------
+// MDX component map — STABLE (built once, useMemo deps=[]).
+//
+// ArchitectureDiagram is defined at module level in ArchitectureDiagram.tsx
+// (stable type reference). It reads sub-step from SubStepContext — NO props
+// bound here. This is the key to preventing remounts.
+//
+// The Deck wraps the MDXProvider in a SubStepContext.Provider whose value
+// changes on each step, causing only a context update (re-render without
+// unmount) in the diagram component.
+// ---------------------------------------------------------------------------
+
+const STABLE_MDX_COMPONENTS: MDXComponents = {
   LiveDashboard: LiveDashboard as MDXComponents[string],
+  ArchitectureDiagram: ArchitectureDiagram as MDXComponents[string],
+  CrewDiagram: CrewDiagram as MDXComponents[string],
   // Tipografía display estilo Apple — Slalom light theme
   h1: ({ children, ...props }) => (
     <h1 className="slide-h1" {...props}>{children}</h1>
@@ -45,7 +89,6 @@ const mdxComponents: MDXComponents = {
   h3: ({ children, ...props }) => (
     <h3 className="slide-h3" {...props}>{children}</h3>
   ),
-  // Solo añadir slide-body si el <p> no viene ya con className desde el MDX
   p: ({ children, className, ...props }) => (
     <p className={className ?? "slide-body"} {...props}>{children}</p>
   ),
@@ -65,27 +108,17 @@ const mdxComponents: MDXComponents = {
 
 // ---------------------------------------------------------------------------
 // Slide wrapper con transición CSS horizontal
-// Posición derivada del ÍNDICE relativo al slide actual (no del estado direction):
-//   past   → translateX(-100%)  index < current
-//   present → translateX(0)     index === current
-//   future  → translateX(+100%) index > current
-// Al avanzar: la entrante (future→present) viene desde la DERECHA (+100%→0) ✓
-// Al retroceder: la entrante (past→present) viene desde la IZQUIERDA (-100%→0) ✓
-// Esto es el comportamiento simétrico esperado.
+// ─────────────────────────────────────────────────────────────────────────
+// Position derived from index vs current (not direction state):
+//   past    → translateX(-100%)
+//   present → translateX(0)
+//   future  → translateX(+100%)
 //
-// ACCESIBILIDAD — visibility:hidden con transition-delay:
+// ACCESSIBILITY — visibility:hidden con transition-delay:
 //   SÍ usamos visibility:hidden, pero con delay = var(--dur-base) para que
 //   se aplique AL FINAL de la transición de transform (no en frame 0).
-//   Esto saca el subtree del tab order (los <a> de slides inactivas no reciben foco)
-//   y resuelve axe aria-hidden-focus (WCAG 2.4.3/2.4.7), sin causar flash
-//   porque visibility cambia cuando la slide ya salió del canvas.
-//   La slide 'present' recupera visibility:visible inmediatamente (delay 0s).
-//   React 18.3.1 no soporta el atributo `inert`, de ahí esta solución CSS.
-//
-// MODO NORMAL — opacity fijo a 1 (sin fade):
-//   Las slides past/future salen del canvas por overflow:hidden de .deck-stage,
-//   así que no hace falta animarlas con opacity. Fade de opacity SOLO en
-//   prefers-reduced-motion (donde no hay translate y el cross-fade es la única señal).
+//   Esto saca el subtree del tab order (los <a> de slides inactivas no reciben
+//   foco) sin causar flash porque visibility cambia cuando la slide ya salió.
 // ---------------------------------------------------------------------------
 
 interface SlideWrapperProps {
@@ -96,7 +129,6 @@ interface SlideWrapperProps {
 
 function SlideWrapper({ index, current, children }: SlideWrapperProps): React.ReactElement {
   const isActive = index === current;
-  // Deriva la posición semántica por índice, no por estado direction global.
   const position: "past" | "present" | "future" =
     index < current ? "past" : index === current ? "present" : "future";
 
@@ -106,8 +138,6 @@ function SlideWrapper({ index, current, children }: SlideWrapperProps): React.Re
       data-active={isActive}
       data-position={position}
       aria-hidden={!isActive}
-      // visibility:hidden con delay (ver CSS .slide-wrapper):
-      // las slides inactivas salen del tab order al final de la transición.
     >
       {children}
     </div>
@@ -115,7 +145,7 @@ function SlideWrapper({ index, current, children }: SlideWrapperProps): React.Re
 }
 
 // ---------------------------------------------------------------------------
-// Progress bar del deck
+// Progress bar
 // ---------------------------------------------------------------------------
 
 function ProgressBar({ current, total }: { current: number; total: number }): React.ReactElement {
@@ -138,10 +168,7 @@ function ProgressBar({ current, total }: { current: number; total: number }): Re
 }
 
 // ---------------------------------------------------------------------------
-// DotNav — discrete dot navigation (Phase 3A)
-// Uses plain <button>s with aria-current — simpler and cheaper than
-// aria Tabs pattern (which clashes with existing arrow-key navigation).
-// Enter/Space work for free on <button> natively.
+// DotNav — Phase 3A
 // ---------------------------------------------------------------------------
 
 interface DotNavProps {
@@ -162,9 +189,6 @@ function DotNav({ current, total, titles, onJump }: DotNavProps): React.ReactEle
           aria-current={i === current ? "true" : undefined}
           aria-label={`Slide ${i + 1}: ${titles[i] ?? `Slide ${i + 1}`}`}
           onClick={() => {
-            // A5: Guard — do NOT navigate when focus-mode dialog is open.
-            // jsdom does not evaluate CSS visibility, so this JS guard is
-            // necessary for tests (and reliable in all environments).
             if (document.querySelector('[role="dialog"]')) return;
             onJump(i);
           }}
@@ -175,7 +199,7 @@ function DotNav({ current, total, titles, onJump }: DotNavProps): React.ReactEle
 }
 
 // ---------------------------------------------------------------------------
-// Controles de navegación flotantes
+// NavControls
 // ---------------------------------------------------------------------------
 
 interface NavControlsProps {
@@ -245,25 +269,53 @@ function NavControls({
 export function Deck(): React.ReactElement {
   const [current, setCurrent] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // Sub-step state: maps slideIndex → current sub-step (0-based).
+  const [subSteps, setSubSteps] = useState<Record<number, number>>({});
   const deckRef = useRef<HTMLDivElement>(null);
   const total = SLIDES.length;
 
-  const prev = useCallback(() => {
-    setCurrent((i) => Math.max(0, i - 1));
+  // Helper: how many sub-steps does a slide have (from SLIDE_REGISTRY; 0 = none)
+  const getStepCount = useCallback((slideIndex: number): number => {
+    return SLIDE_REGISTRY[slideIndex]?.stepCount ?? 0;
   }, []);
 
+  // Helper: current sub-step for a slide
+  const getSubStep = useCallback(
+    (slideIndex: number): number => subSteps[slideIndex] ?? 0,
+    [subSteps],
+  );
+
+  // Navigate to prev: either retreat sub-step or go to prev slide
+  const prev = useCallback(() => {
+    const stepCount = getStepCount(current);
+    const subStep = getSubStep(current);
+    if (stepCount > 0 && subStep > 0) {
+      setSubSteps((s) => ({ ...s, [current]: subStep - 1 }));
+    } else {
+      setCurrent((i) => Math.max(0, i - 1));
+    }
+  }, [current, getStepCount, getSubStep]);
+
+  // Navigate to next: either advance sub-step or go to next slide
   const next = useCallback(() => {
-    setCurrent((i) => Math.min(total - 1, i + 1));
-  }, [total]);
+    const stepCount = getStepCount(current);
+    const subStep = getSubStep(current);
+    if (stepCount > 0 && subStep < stepCount - 1) {
+      setSubSteps((s) => ({ ...s, [current]: subStep + 1 }));
+    } else {
+      setCurrent((i) => Math.min(total - 1, i + 1));
+    }
+  }, [current, total, getStepCount, getSubStep]);
 
   // jumpTo: used by DotNav clicks and 1-9 key presses.
-  // SlideWrapper derives direction automatically from index vs current —
-  // no extra state needed; forward jump enters from right, backward from left.
+  // Resets sub-step of the target slide to 0 (fresh start).
   const jumpTo = useCallback(
     (i: number) => {
-      setCurrent(Math.max(0, Math.min(total - 1, i)));
+      const target = Math.max(0, Math.min(total - 1, i));
+      setCurrent(target);
+      setSubSteps((s) => ({ ...s, [target]: 0 }));
     },
-    [total]
+    [total],
   );
 
   const toggleFullscreen = useCallback(() => {
@@ -278,11 +330,8 @@ export function Deck(): React.ReactElement {
     }
   }, []);
 
-  // Sincronizar estado isFullscreen con el evento del browser
   useEffect(() => {
-    const handler = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-    };
+    const handler = () => setIsFullscreen(!!document.fullscreenElement);
     document.addEventListener("fullscreenchange", handler);
     return () => document.removeEventListener("fullscreenchange", handler);
   }, []);
@@ -290,30 +339,18 @@ export function Deck(): React.ReactElement {
   // Keyboard handler
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Guard: target must be an Element (not window/document) to call getAttribute
       if (!(e.target instanceof Element)) return;
       const target = e.target as HTMLElement;
       const tag = target.tagName;
 
-      // No interferir si el foco está en un input/textarea
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
-      // B3b FIX: if a focus-mode dialog is open, block ALL deck navigation keys.
-      // The only allowed keyboard actions are: Esc (handled in FocusOverlay) and
-      // Tab (focus trap, also in FocusOverlay). Arrow keys, Space, PageUp/Down, F,
-      // 1-9 and dot-nav clicks must NOT change the slide while the overlay is open.
       const isFocusOpen = !!document.querySelector('[role="dialog"]');
-
-      // No interceptar Space/Enter si el foco está en un elemento interactivo
-      // (button nativo, enlace, role=group expand button) — dejar que ellos manejen.
       const isInteractiveTarget =
         tag === "BUTTON" ||
         tag === "A" ||
         target.getAttribute("role") === "button";
 
-      // Phase 3A: numeric keys 1-9 → jump to slide N.
-      // Guard: not if focus-mode is open, and not if a modifier key is held
-      // (Ctrl+1, Meta+1, Alt+1 have browser-level meanings — do not intercept).
       if (e.key >= "1" && e.key <= "9") {
         if (isFocusOpen) return;
         if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -329,35 +366,21 @@ export function Deck(): React.ReactElement {
         case "ArrowRight":
         case "ArrowDown":
         case "PageDown":
-          // B3b: block navigation if focus-mode is open
           if (isFocusOpen) { e.preventDefault(); return; }
-          if (!isInteractiveTarget) {
-            e.preventDefault();
-            next();
-          }
+          if (!isInteractiveTarget) { e.preventDefault(); next(); }
           break;
         case " ":
-          // B3b: block navigation if focus-mode is open
           if (isFocusOpen) { e.preventDefault(); return; }
-          // Space on interactive targets: let the element handle it
-          if (!isInteractiveTarget) {
-            e.preventDefault();
-            next();
-          }
+          if (!isInteractiveTarget) { e.preventDefault(); next(); }
           break;
         case "ArrowLeft":
         case "ArrowUp":
         case "PageUp":
-          // B3b: block navigation if focus-mode is open
           if (isFocusOpen) { e.preventDefault(); return; }
-          if (!isInteractiveTarget) {
-            e.preventDefault();
-            prev();
-          }
+          if (!isInteractiveTarget) { e.preventDefault(); prev(); }
           break;
         case "f":
         case "F":
-          // B3b: block fullscreen toggle if focus-mode is open
           if (isFocusOpen) return;
           toggleFullscreen();
           break;
@@ -369,47 +392,78 @@ export function Deck(): React.ReactElement {
     return () => window.removeEventListener("keydown", handler);
   }, [next, prev, jumpTo, toggleFullscreen, total]);
 
-  // Slide title for the page/document title (useful when screensharing)
+  // Document title
   const currentTitle = useMemo(() => SLIDE_TITLES[current] ?? `Slide ${current + 1}`, [current]);
   useEffect(() => {
-    document.title = `${currentTitle} — The Unified Golden Path`;
+    document.title = `${currentTitle} — AI, IoT & Cloud`;
   }, [currentTitle]);
 
+  // ── STABLE MDX component map — useMemo(deps=[]) ───────────────────────
+  // This never changes identity, so ArchitectureDiagram is NEVER remounted
+  // between sub-steps. Sub-step state is delivered via SubStepContext below.
+  const mdxComponents = useMemo(() => STABLE_MDX_COMPONENTS, []);
+
+  // ── SubStepContext value — drives ArchitectureDiagram (ARCH_SLIDE_INDEX) ─
+  // Uses subSteps[ARCH_SLIDE_INDEX] regardless of the current slide, so the
+  // Architecture diagram doesn't jump to the Crew diagram's step.
+  const subStepCtxValue = useMemo(
+    () => ({
+      subStep: subSteps[ARCH_SLIDE_INDEX] ?? 0,
+      isActive: current === ARCH_SLIDE_INDEX,
+    }),
+    [current, subSteps],
+  );
+
+  // ── CrewSubStepContext value — drives CrewDiagram (CREW_SLIDE_INDEX) ──────
+  // Uses subSteps[CREW_SLIDE_INDEX] regardless of the current slide, so the
+  // Crew diagram doesn't affect ArchitectureDiagram.
+  const crewSubStepCtxValue = useMemo(
+    () => ({
+      subStep: subSteps[CREW_SLIDE_INDEX] ?? 0,
+      isActive: current === CREW_SLIDE_INDEX,
+    }),
+    [current, subSteps],
+  );
+
   return (
-    <MDXProvider components={mdxComponents}>
-      <div
-        ref={deckRef}
-        className="deck"
-        data-fullscreen={isFullscreen}
-        aria-roledescription="presentation"
-        aria-label={`Presentation: ${currentTitle}`}
-      >
-        {/* Stage — contiene todos los slides solapados */}
-        <div className="deck-stage">
-          {SLIDES.map((SlideContent, i) => (
-            <SlideWrapper key={i} index={i} current={current}>
-              <div className="slide-inner">
-                <SlideContent />
-              </div>
-            </SlideWrapper>
-          ))}
+    <SubStepContext.Provider value={subStepCtxValue}>
+      <CrewSubStepContext.Provider value={crewSubStepCtxValue}>
+      <MDXProvider components={mdxComponents}>
+        <div
+          ref={deckRef}
+          className="deck"
+          data-fullscreen={isFullscreen}
+          aria-roledescription="presentation"
+          aria-label={`Presentation: ${currentTitle}`}
+        >
+          {/* Stage — contiene todos los slides solapados */}
+          <div className="deck-stage">
+            {SLIDES.map((SlideContent, i) => (
+              <SlideWrapper key={i} index={i} current={current}>
+                <div className="slide-inner">
+                  <SlideContent />
+                </div>
+              </SlideWrapper>
+            ))}
+          </div>
+
+          {/* Controles flotantes con DotNav integrado */}
+          <NavControls
+            current={current}
+            total={total}
+            titles={SLIDE_TITLES}
+            onPrev={prev}
+            onNext={next}
+            onFullscreen={toggleFullscreen}
+            onJump={jumpTo}
+            isFullscreen={isFullscreen}
+          />
+
+          {/* Barra de progreso */}
+          <ProgressBar current={current} total={total} />
         </div>
-
-        {/* Controles flotantes con DotNav integrado */}
-        <NavControls
-          current={current}
-          total={total}
-          titles={SLIDE_TITLES}
-          onPrev={prev}
-          onNext={next}
-          onFullscreen={toggleFullscreen}
-          onJump={jumpTo}
-          isFullscreen={isFullscreen}
-        />
-
-        {/* Barra de progreso — borde inferior */}
-        <ProgressBar current={current} total={total} />
-      </div>
-    </MDXProvider>
+      </MDXProvider>
+      </CrewSubStepContext.Provider>
+    </SubStepContext.Provider>
   );
 }

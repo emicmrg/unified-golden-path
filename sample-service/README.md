@@ -154,3 +154,4 @@ Amplify-hosted data) directly inside the presentation, so the sample-service CI 
 and self-healing demo can be shown in context without switching windows. The slide engine
 supports keyboard navigation (arrow keys, 1–9 shortcuts, dot-nav) and an accessible
 focus-mode overlay for zooming into individual bento tiles.
+The dashboard is now an interactive presentation deck with live architecture/crew diagrams.
