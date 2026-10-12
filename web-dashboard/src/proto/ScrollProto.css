@@ -519,6 +519,12 @@
   Con reduced-motion: desactivar sticky/zoom/parallax completamente.
   La historia se lee como flujo estático normal.
   skill scroll-storytelling §4, §8.
+
+  C1 específico:
+    • scroll-snap se elimina (el snap forzado con reduce puede sentirse extraño).
+    • scroll-behavior: smooth se elimina (JS usa 'instant' por su lógica interna).
+    • Las transiciones del halo se eliminan.
+    • El sticky se desactiva — la historia C1 queda en flujo estático.
 */
 
 @media (prefers-reduced-motion: reduce) {
@@ -549,6 +555,29 @@
   .proto-halo-connector,
   .proto-desat-active {
     transition: none;
+  }
+
+  /* C1 — remove snap and smooth scroll */
+  .proto-section--c1 .proto-steps--c1-snap {
+    scroll-snap-type: none;
+    scroll-behavior: auto;
+    overflow-y: visible;
+    height: auto;
+    padding-bottom: 4rem;
+  }
+
+  .proto-step--snap {
+    scroll-snap-align: none;
+  }
+
+  /* C1 — remove glow transitions */
+  .proto-soft-halo-glow {
+    transition: none !important;
+  }
+
+  /* C1 — layout reflow: story back to block */
+  .proto-section--c1 .proto-story {
+    display: block;
   }
 }
 
@@ -592,6 +621,18 @@
   .proto-header {
     padding: 0.75rem 1rem;
   }
+
+  /* C1 — on mobile the snap column loses its fixed height */
+  .proto-section--c1 .proto-steps--c1-snap {
+    height: auto;
+    overflow-y: visible;
+    scroll-snap-type: none;
+  }
+
+  .proto-step--snap {
+    scroll-snap-align: none;
+    min-height: auto;
+  }
 }
 
 
@@ -600,6 +641,9 @@
    Técnica: overlay DOM con box-shadow muy difuso (sin border nítido).
    Scale 1.02 con spring críticamente amortiguado desde JS.
    Un desajuste de 2-3px en la proyección es invisible (la sombra lo absorbe).
+
+   HARDENED (PR #15 round 3): scroll-snap · hysteresis · keyboard nav ·
+   ResizeObserver · halo cross-fade. Variante definitiva.
    ══════════════════════════════════════════════════════════════════════════ */
 
 .proto-canvas--soft-halo {
@@ -619,7 +663,8 @@
   -webkit-user-drag: none;
 }
 
-/* Glow overlay — posicionado en JS. NO hay border. Solo sombra difusa. */
+/* Glow overlay — posicionado en JS. NO hay border. Solo sombra difusa.
+   Cross-fade: opacity transition permite el double-buffer swap suave. */
 .proto-soft-halo-glow {
   position: absolute;
   border-radius: 16px;
@@ -637,18 +682,138 @@
   );
   pointer-events: none;
   transform-origin: center;
-  /* transition de opacidad y posición — el scale lo maneja JS (spring) */
+  /*
+    opacity transition drives the cross-fade (double-buffer swap).
+    Position transitions are intentionally kept: on resize they reposition smoothly.
+    No transition on transform — that's driven by the spring in JS.
+  */
   transition:
-    top 360ms var(--ease-out),
-    left 360ms var(--ease-out),
-    width 360ms var(--ease-out),
-    height 360ms var(--ease-out),
-    opacity 280ms var(--ease-out);
+    opacity 200ms ease-out,
+    top 280ms var(--ease-out),
+    left 280ms var(--ease-out),
+    width 280ms var(--ease-out),
+    height 280ms var(--ease-out);
 }
 
 .proto-soft-halo-glow[data-hidden="true"] {
   opacity: 0;
-  transform: scale(1);
+  pointer-events: none;
+}
+
+.proto-soft-halo-glow[data-hidden="false"] {
+  opacity: 1;
+}
+
+/* ── C1-specific scroll-snap on the text column ──
+   scroll-snap-type: y proximity — snaps only if the scroll position lands
+   within ~50% of a snap point. Less aggressive than mandatory; allows fast
+   flick-to-skip while still settling on a single section.
+   Mandatory was considered but rejected: on a long-content step it can trap
+   the scroll if the content is taller than the viewport.
+   The snap is removed with reduced-motion (see @media block below).
+*/
+.proto-steps--c1-snap {
+  /* Snap container: the page body is the scroll container for this layout */
+  /* We use scroll-snap on individual step elements instead of the container,
+     since the scroll root is window (body). Each step declares snap-align. */
+}
+
+.proto-step--snap {
+  scroll-snap-align: center;
+  scroll-snap-stop: normal; /* allow fast scroll to skip steps */
+}
+
+/* The scroll-snap-type must be on the scroll container. Since the layout
+   uses window scroll (not overflow: scroll on proto-steps), we set it on
+   html/body scoped to when C1 is active. We use the .proto-section--c1
+   parent to scope this — but body-level snap requires a class on <body>
+   or a dedicated scroll container. Instead, we wrap the steps in a full-
+   height scroll container only for C1.
+   Implementation: proto-story for C1 does NOT use window scroll; it uses
+   a dedicated scrollable left column. See proto-steps--c1-snap below.
+   The outer .proto-section--c1 .proto-story overrides the grid to give
+   the text column overflow: scroll with snap. */
+
+.proto-section--c1 .proto-story {
+  /* Override the default align-items: start to allow the snap container to
+     stretch to the pin height */
+  align-items: stretch;
+}
+
+.proto-section--c1 .proto-steps--c1-snap {
+  /* Make the text column a scroll container for snap */
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* Snap type: y proximity — snaps when close to a snap point */
+  scroll-snap-type: y proximity;
+  /* Match the sticky panel height */
+  height: min(80vh, 55vw);
+  /* Remove the default padding-bottom (the snap handles landing) */
+  padding-bottom: 50%;
+  /* Smooth scrolling for keyboard nav — JS overrides to 'instant' with reduced-motion */
+  scroll-behavior: smooth;
+  /* Remove align-self default */
+  align-self: start;
+  /* Focus outline for the parent story region */
+  border-radius: 8px;
+}
+
+.proto-section--c1 .proto-steps--c1-snap::-webkit-scrollbar {
+  width: 4px;
+}
+.proto-section--c1 .proto-steps--c1-snap::-webkit-scrollbar-track {
+  background: transparent;
+}
+.proto-section--c1 .proto-steps--c1-snap::-webkit-scrollbar-thumb {
+  background: var(--c-border-mid);
+  border-radius: 2px;
+}
+
+/* Remove the min-height from snap steps — snap handles the pacing */
+.proto-section--c1 .proto-step--snap {
+  min-height: 85%;
+  display: grid;
+  align-content: center;
+}
+
+/* Keyboard nav region focus ring */
+.proto-section--c1 .proto-story:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 3px;
+}
+
+/* Keyboard hint — subtle label below diagram */
+.proto-keyboard-hint {
+  font-family: var(--font-body);
+  font-size: 0.6875rem;
+  color: var(--c-muted);
+  text-align: center;
+  letter-spacing: 0.04em;
+  opacity: 0.65;
+  margin-top: 0.25rem;
+  transition: opacity 200ms ease;
+}
+
+.proto-section--c1 .proto-story:focus-visible .proto-keyboard-hint,
+.proto-section--c1 .proto-story:focus-within .proto-keyboard-hint {
+  opacity: 1;
+  color: var(--c-accent);
+}
+
+/* "Variante definitiva" badge on the label bar */
+.proto-variant-label__badge {
+  font-family: var(--font-head);
+  font-size: 0.625rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--c-accent);
+  background: rgba(12, 98, 251, 0.08);
+  border: 1px solid rgba(12, 98, 251, 0.25);
+  border-radius: 4px;
+  padding: 0.15rem 0.45rem;
+  flex-shrink: 0;
+  align-self: center;
 }
 
 /* ─══════════════════════════════════════════════════════════════════════════
