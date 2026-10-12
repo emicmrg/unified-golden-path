@@ -1,0 +1,77 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# web-dashboard-ci.yml
+# Main CI pipeline for @ugp/web-dashboard.
+#
+# PURPOSE:
+#   Provides a required check for PRs that touch the web-dashboard package.
+#   The job name "Build and Test (@ugp/web-dashboard)" must be registered as
+#   a required status check in the branch protection settings for main so that
+#   dashboard PRs are not permanently blocked by the sample-service check.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: web-dashboard-ci
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "web-dashboard/**"
+      - ".github/workflows/web-dashboard-ci.yml"
+  # pull_request has NO paths filter so the required status check always runs
+  # on every PR to main — even when web-dashboard/** is not touched.
+  # A required check with paths: on pull_request stays "Expected/waiting" forever
+  # on PRs that skip those paths, blocking the merge. The push trigger keeps its
+  # paths filter to avoid wasting CI on unrelated pushes.
+  pull_request:
+    branches:
+      - main
+
+# Cancel previous runs for the same branch/PR to avoid queue build-up
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimum permissions: read-only access to source code. Nothing is written.
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and Test (@ugp/web-dashboard)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # 1. Checkout the code at the branch/PR that triggered the workflow
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. Install pnpm before setup-node so the cache works correctly
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "9.15.4"
+
+      # 3. Set up Node.js 20 with pnpm cache
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      # 4. Install dependencies for the entire workspace
+      - name: Install dependencies (pnpm install)
+        run: pnpm install --frozen-lockfile
+
+      # 5. Type-check — fails here if there are type errors
+      - name: Typecheck (tsc -b)
+        run: pnpm --dir web-dashboard run typecheck
+
+      # 6. Build — compiles TS and bundles with Vite
+      - name: Build (vite build)
+        run: pnpm --dir web-dashboard run build
+
+      # 7. Run tests (vitest run — one-shot, never watch mode)
+      - name: Test (vitest run)
+        run: pnpm --dir web-dashboard run test

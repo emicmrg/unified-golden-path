@@ -17,21 +17,24 @@ import type { ComponentType } from "react";
 
 import { ARCH_DIAGRAM_STEP_COUNT } from "./ArchitectureDiagram.js";
 import { CREW_DIAGRAM_STEP_COUNT } from "./CrewDiagram.js";
+import { SH_DIAGRAM_STEP_COUNT } from "./SelfHealingDiagram.js";
 
 import Portada from "./slides/01-portada.mdx";
 import Plataforma from "./slides/02-plataforma.mdx";
 import Dashboard from "./slides/03-dashboard-live.mdx";
 import Architecture from "./slides/05-architecture.mdx";
 import CrewAgents from "./slides/06-crew-agents.mdx";
+import SelfHealingFlow from "./slides/07-self-healing-flow.mdx";
 import Cierre from "./slides/04-cierre.mdx";
 
 export const SLIDES: ComponentType[] = [
-  Portada,
-  Plataforma,
-  Dashboard,
-  Architecture,
-  CrewAgents,
-  Cierre,
+  Portada,       // 0
+  Plataforma,    // 1
+  Dashboard,     // 2
+  Architecture,  // 3
+  CrewAgents,    // 4
+  SelfHealingFlow, // 5
+  Cierre,        // 6
 ];
 
 export const SLIDE_TITLES: string[] = [
@@ -40,6 +43,7 @@ export const SLIDE_TITLES: string[] = [
   "Live Dashboard",
   "AWS Architecture",
   "Self-Healing Crew — CrewAI Agents",
+  "Self-Healing Flow — GitHub ↔ AWS",
   "What's Next?",
 ];
 
@@ -64,15 +68,17 @@ export interface SlideRegistryEntry {
 export const SLIDE_REGISTRY: Record<number, SlideRegistryEntry> = {
   3: { stepCount: ARCH_DIAGRAM_STEP_COUNT }, // Architecture diagram (index 3)
   4: { stepCount: CREW_DIAGRAM_STEP_COUNT }, // Crew Agents diagram (index 4)
+  5: { stepCount: SH_DIAGRAM_STEP_COUNT },   // Self-Healing Flow diagram (index 5)
 };
 
 /**
- * Explicit slide indices for the two diagram slides.
+ * Explicit slide indices for the diagram slides.
  * Exported here (single source of truth) so Deck.tsx and tests never hardcode
  * magic numbers like subSteps[3] or subSteps[4].
  */
 export const ARCH_SLIDE_INDEX = 3;
 export const CREW_SLIDE_INDEX = 4;
+export const SH_SLIDE_INDEX = 5;
 
 /**
  * Sub-step counts per slide — derived from SLIDE_REGISTRY so there is only

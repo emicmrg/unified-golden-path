@@ -48,13 +48,14 @@ import React, {
   useMemo,
 } from "react";
 import { MDXProvider } from "@mdx-js/react";
-import { SLIDES, SLIDE_TITLES, SLIDE_REGISTRY, ARCH_SLIDE_INDEX, CREW_SLIDE_INDEX } from "./slides.js";
+import { SLIDES, SLIDE_TITLES, SLIDE_REGISTRY, ARCH_SLIDE_INDEX, CREW_SLIDE_INDEX, SH_SLIDE_INDEX } from "./slides.js";
 import { LiveDashboard } from "../presentation/LiveDashboard.js";
 import {
   ArchitectureDiagram,
   SubStepContext,
 } from "../presentation/ArchitectureDiagram.js";
 import { CrewDiagram, CrewSubStepContext } from "../presentation/CrewDiagram.js";
+import { SelfHealingDiagram, SelfHealingSubStepContext } from "../presentation/SelfHealingDiagram.js";
 import type { MDXComponents } from "mdx/types";
 
 // ---------------------------------------------------------------------------
@@ -79,6 +80,7 @@ const STABLE_MDX_COMPONENTS: MDXComponents = {
   LiveDashboard: LiveDashboard as MDXComponents[string],
   ArchitectureDiagram: ArchitectureDiagram as MDXComponents[string],
   CrewDiagram: CrewDiagram as MDXComponents[string],
+  SelfHealingDiagram: SelfHealingDiagram as MDXComponents[string],
   // Tipografía display estilo Apple — Slalom light theme
   h1: ({ children, ...props }) => (
     <h1 className="slide-h1" {...props}>{children}</h1>
@@ -425,9 +427,21 @@ export function Deck(): React.ReactElement {
     [current, subSteps],
   );
 
+  // ── SelfHealingSubStepContext value — drives SelfHealingDiagram (SH_SLIDE_INDEX) ──
+  // Uses subSteps[SH_SLIDE_INDEX] regardless of the current slide, so the
+  // Self-Healing diagram doesn't affect ArchitectureDiagram or CrewDiagram.
+  const shSubStepCtxValue = useMemo(
+    () => ({
+      subStep: subSteps[SH_SLIDE_INDEX] ?? 0,
+      isActive: current === SH_SLIDE_INDEX,
+    }),
+    [current, subSteps],
+  );
+
   return (
     <SubStepContext.Provider value={subStepCtxValue}>
       <CrewSubStepContext.Provider value={crewSubStepCtxValue}>
+      <SelfHealingSubStepContext.Provider value={shSubStepCtxValue}>
       <MDXProvider components={mdxComponents}>
         <div
           ref={deckRef}
@@ -463,6 +477,7 @@ export function Deck(): React.ReactElement {
           <ProgressBar current={current} total={total} />
         </div>
       </MDXProvider>
+      </SelfHealingSubStepContext.Provider>
       </CrewSubStepContext.Provider>
     </SubStepContext.Provider>
   );
