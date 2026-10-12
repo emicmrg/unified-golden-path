@@ -68,6 +68,14 @@ new UgpIotStack(app, "UgpIotStack", {
  * For a local synth/demo without a repo, opt into the placeholders EXPLICITLY (never deploy it):
  *
  *   cdk synth SelfHealingStack -c ugp:allowPlaceholderRepo=true
+ *
+ * `githubOwnerId` / `githubRepoId` are the IMMUTABLE numeric GitHub ids that go into the OIDC
+ * `sub` claim (`repo:<org>@<ownerId>/<repo>@<repoId>:...`). They are OPTIONAL here only because
+ * the stack already knows them for the repository this project is deployed from; for any other
+ * org/repo the stack fails closed and asks for them, because deploying the classic `sub` against
+ * a repo with immutable ids enabled makes STS deny every assume-role. Look them up with:
+ *
+ *   gh api /repos/<org>/<repo> --jq '{ownerId: .owner.id, repoId: .id}'
  */
 new SelfHealingStack(app, "SelfHealingStack", {
   env,
@@ -76,6 +84,8 @@ new SelfHealingStack(app, "SelfHealingStack", {
     "DynamoDB circuit breaker + least-privilege CI role via OIDC",
   githubOrg: app.node.tryGetContext("ugp:githubOrg") as string | undefined,
   githubRepo: app.node.tryGetContext("ugp:githubRepo") as string | undefined,
+  githubOwnerId: app.node.tryGetContext("ugp:githubOwnerId") as string | undefined,
+  githubRepoId: app.node.tryGetContext("ugp:githubRepoId") as string | undefined,
   githubAppId: app.node.tryGetContext("ugp:githubAppId") as string | undefined,
   githubInstallationId: app.node.tryGetContext("ugp:githubInstallationId") as string | undefined,
   githubAppSecretArn: app.node.tryGetContext("ugp:githubAppSecretArn") as string | undefined,
