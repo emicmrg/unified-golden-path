@@ -18,10 +18,14 @@ on:
     paths:
       - "web-dashboard/**"
       - ".github/workflows/web-dashboard-ci.yml"
+  # pull_request has NO paths filter so the required status check always runs
+  # on every PR to main — even when web-dashboard/** is not touched.
+  # A required check with paths: on pull_request stays "Expected/waiting" forever
+  # on PRs that skip those paths, blocking the merge. The push trigger keeps its
+  # paths filter to avoid wasting CI on unrelated pushes.
   pull_request:
-    paths:
-      - "web-dashboard/**"
-      - ".github/workflows/web-dashboard-ci.yml"
+    branches:
+      - main
 
 # Cancel previous runs for the same branch/PR to avoid queue build-up
 concurrency:

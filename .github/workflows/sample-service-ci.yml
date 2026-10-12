@@ -18,9 +18,14 @@ on:
       - "**"
     paths:
       - "sample-service/**"
+  # pull_request has NO paths filter so the required status check always runs
+  # on every PR to main — even when sample-service/** is not touched.
+  # A required check with paths: on pull_request stays "Expected/waiting" forever
+  # on PRs that skip those paths, blocking the merge. The push trigger keeps its
+  # paths filter to avoid wasting CI on unrelated pushes.
   pull_request:
-    paths:
-      - "sample-service/**"
+    branches:
+      - main
   # Allows manual trigger for the demo without touching the code
   workflow_dispatch:
 
