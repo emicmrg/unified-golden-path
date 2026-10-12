@@ -425,15 +425,11 @@ describe("Focus-mode — Option A (simple centered panel)", () => {
       // Close via Escape
       await user.keyboard("{Escape}");
 
+      // handleClose calls triggerRef.current.focus() synchronously before
+      // onRequestClose(), so the expand button should have focus once
+      // userEvent drains any pending rAFs.
       await waitFor(() => {
-        // The rAF in handleClose schedules focus restoration.
-        // After userEvent drains the queue, activeElement should be expandBtn.
-        const active = document.activeElement;
-        // Accept either exact match or the expand button being focused
-        expect(
-          active === expandBtn ||
-          (active as HTMLElement | null)?.getAttribute("aria-label")?.match(/expand golden path/i)
-        ).toBeTruthy();
+        expect(expandBtn).toHaveFocus();
       });
     });
 
