@@ -1,5 +1,5 @@
 /**
- * ScrollProto.tsx — Prototipo scrollytelling con 3 variantes de resalte (sin scrim).
+ * ScrollProto.tsx — Prototipo scrollytelling con 6 variantes de resalte (A, B, C, C1, C2, C3).
  *
  * Acceso: ?proto=scroll en la URL
  *
@@ -10,22 +10,30 @@
  *   - Cada variante comparte la misma lógica de estado (activeStep) pero implementa
  *     su propio mecanismo de resalte.
  *
- * VARIANTES:
+ * VARIANTES ORIGINALES:
  *   A — Desaturar/atenuar: dos capas de <img> (gris + color); la activa se recorta
  *       con clip-path polygon en coordenadas % del canvas DOM.
- *   B — Zoom/pan cámara: transform scale+translate con spring críticamente amortiguado
- *       (useSpring) calculado desde SH_FOCUS_BOXES (coords viewBox).
- *   C — Borde/halo: la imagen entera se atenúa levemente; un ring DOM se posiciona
- *       sobre la bbox activa proyectada al canvas.
+ *   B — Zoom/pan cámara: transform scale+translate con spring críticamente amortiguado.
+ *   C — Borde/halo: la imagen se atenúa; un ring DOM posicionado sobre la bbox activa.
  *
- * LIMITACIÓN CONOCIDA (SVG-as-img + CSP):
- *   Como el SVG se sirve como <img> (asset URL de Vite, CSP img-src 'self'),
- *   no es posible acceder al DOM interno del SVG para aplicar filtros por grupo.
- *   Las tres variantes operan sobre capas DOM superpuestas encima de la imagen.
+ * VARIANTES NUEVAS (PR #15 — round 2):
+ *   C1 — Halo suave sin contorno: glow difuso (box-shadow grande) + scale 1.02 con spring.
+ *        Sin borde nítido, tolera ±3px de imprecisión en la proyección de la bbox.
+ *   C2 — Halo suave + atenuación: C1 más atenuación del fondo (como A pero suave).
+ *        Doble señal de foco; la precisión del halo importa menos.
+ *   C3 — Resalte pintado dentro del SVG: el SVG se importa como texto raw (?raw),
+ *        se parsea e inyecta inline, y se dibuja un <rect> de realce en coords del
+ *        viewBox (con SVG drop-shadow filter). El realce escala junto al diagrama
+ *        sin posicionamiento DOM — imposible el desajuste.
+ *
+ * LIMITACIÓN CONOCIDA — SVG-as-img + CSP:
+ *   Variantes A/B/C operan sobre capas DOM superpuestas a una <img>.
+ *   Variantes C1/C2 también (mismo approach, sin border).
+ *   Variante C3 inlinea el SVG: accede al viewBox directamente. El SVG de Lucid
+ *   NO tiene <g id="..."> semánticos; C3 dibuja los <rect> de realce por bbox en
+ *   el mismo sistema de coords que SH_FOCUS_BOXES — robusto y siempre alineado.
  *
  * REDUCED-MOTION: sticky desactivado, transforms eliminados, reveal estático.
- *   skill: apple-design + scroll-storytelling §4, §8.
- *
  * ACCESIBILIDAD: aria-live anuncia el paso activo, roles region/tablist, foco por teclado.
  */
 
@@ -33,6 +41,7 @@ import React, {
   useCallback,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -47,13 +56,15 @@ import {
 import type { BBox } from "../presentation/ArchitectureDiagram.js";
 
 import selfHealingFlowSvgUrl from "../presentation/assets/self-healing-flow.svg";
+// Raw SVG text for C3 inline variant (Vite ?raw import — no img-src CSP issue)
+import selfHealingFlowSvgRaw from "../presentation/assets/self-healing-flow.svg?raw";
 import "./ScrollProto.css";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-type Variant = "A" | "B" | "C";
+type Variant = "A" | "B" | "C" | "C1" | "C2" | "C3";
 
 interface VariantMeta {
   id: Variant;
@@ -77,9 +88,27 @@ const VARIANTS: VariantMeta[] = [
   },
   {
     id: "C",
-    label: "C",
+    label: "C — original",
     title: "Borde / Halo de marca",
-    desc: "El grupo activo recibe un halo ring Slalom Blue. El resto queda casi sin atenuar.",
+    desc: "Ring DOM con borde Slalom Blue sobre la bbox. Puede desalinearse 2-3px (ver C1/C2).",
+  },
+  {
+    id: "C1",
+    label: "C1",
+    title: "Halo suave sin contorno",
+    desc: "Glow difuso (box-shadow grande) + scale 1.02. Sin borde nítido, perdona imprecisiones de bbox.",
+  },
+  {
+    id: "C2",
+    label: "C2",
+    title: "Halo suave + atenuación",
+    desc: "C1 con atenuación leve del fondo. Doble señal de foco; la precision del halo importa menos.",
+  },
+  {
+    id: "C3",
+    label: "C3",
+    title: "Resalte dentro del SVG",
+    desc: "SVG inline: <rect> de realce en coords del viewBox. Escala perfecto, imposible desalinearse.",
   },
 ];
 
@@ -137,12 +166,6 @@ function useSpringValue(target: number, response = 0.36): number {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Utility: project a viewBox BBox into DOM canvas coordinates
-//
-// The <img> fits inside .proto-canvas via object-fit:contain, centered.
-// We must compute the letterboxed area and then map viewBox coords to it.
-//
-// Returns {left, top, width, height} in px relative to the canvas element.
-// Returns null if canvas has no size yet.
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface DOMRect4 {
@@ -161,7 +184,6 @@ function projectBBox(
   const ch = canvasEl.clientHeight;
   if (cw === 0 || ch === 0) return null;
 
-  // Compute the rendered size of the image (object-fit:contain)
   const imgAspect = SH_SVG_VB_W / SH_SVG_VB_H;
   const canvasAspect = cw / ch;
 
@@ -171,13 +193,11 @@ function projectBBox(
   let offsetY: number;
 
   if (imgAspect > canvasAspect) {
-    // Image is wider than canvas → letterbox top/bottom
     renderedW = cw;
     renderedH = cw / imgAspect;
     offsetX = 0;
     offsetY = (ch - renderedH) / 2;
   } else {
-    // Image is taller → pillarbox left/right
     renderedH = ch;
     renderedW = ch * imgAspect;
     offsetX = (cw - renderedW) / 2;
@@ -197,17 +217,6 @@ function projectBBox(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Variant A — Desaturar / Atenuar
-//
-// Técnica: dos <img> superpuestas.
-//   1. proto-desat-layer: toda la imagen desaturada/atenuada (base permanente)
-//   2. proto-desat-active: misma imagen a color, clip-path en la bbox activa
-//
-// clip-path se expresa en coordenadas absolutas relativas al canvas (inset()).
-// La transición de clip-path es nativa CSS → smooth sin rAF extra.
-//
-// LIMITACIÓN: clip-path con `inset` o `polygon` en % funciona bien en todos
-// los browsers modernos. Si el browser no soporta clip-path (IE), se muestra
-// la imagen a color normal (degradación segura).
 // ─────────────────────────────────────────────────────────────────────────────
 
 function VariantADesaturate({
@@ -236,7 +245,6 @@ function VariantADesaturate({
     const cw = canvas.clientWidth;
     const ch = canvas.clientHeight;
 
-    // inset(top right bottom left)
     const t = Math.max(0, top - PAD);
     const r = Math.max(0, cw - (left + width + PAD));
     const b = Math.max(0, ch - (top + height + PAD));
@@ -251,7 +259,6 @@ function VariantADesaturate({
       ref={canvasRef}
       aria-hidden="true"
     >
-      {/* Capa gris base — siempre visible */}
       <img
         src={selfHealingFlowSvgUrl}
         alt=""
@@ -259,7 +266,6 @@ function VariantADesaturate({
         draggable={false}
         aria-hidden="true"
       />
-      {/* Capa color — recortada a la bbox activa */}
       <img
         src={selfHealingFlowSvgUrl}
         alt=""
@@ -268,7 +274,6 @@ function VariantADesaturate({
         aria-hidden="true"
         style={{
           clipPath: isOverview ? "inset(0 0 0 0)" : clipPath,
-          opacity: isOverview ? 1 : 1,
         }}
       />
     </div>
@@ -277,23 +282,11 @@ function VariantADesaturate({
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Variant B — Zoom / Pan de cámara
-//
-// Técnica: transform (scale + translate) con spring críticamente amortiguado.
-// El encuadre se calcula a partir de SH_FOCUS_BOXES (coords viewBox):
-//   1. Encontrar el centro de la bbox en coords viewBox normalizadas [0..1].
-//   2. Calcular el scale necesario para que la bbox llene el canvas con margen.
-//   3. Calcular el translate para centrar la bbox en el viewport del canvas.
-//
-// El spring anima scale, translateX, translateY por separado (3 springs) →
-// garantiza interpolación sin desyncs en diagonal.
-//
-// LIMITACIÓN: con object-fit:contain, el transform se aplica a toda la imagen.
-// Áreas fuera del canvas original se recortan por overflow:hidden del .proto-canvas.
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface CameraTarget {
   scale: number;
-  tx: number; // px, relativo al centro del canvas
+  tx: number;
   ty: number;
 }
 
@@ -327,25 +320,17 @@ function computeCamera(
   const scaleX = renderedW / SH_SVG_VB_W;
   const scaleY = renderedH / SH_SVG_VB_H;
 
-  // Center of bbox in DOM px (relative to canvas origin)
   const bboxCenterX = offsetX + (bbox.x + bbox.w / 2) * scaleX;
   const bboxCenterY = offsetY + (bbox.y + bbox.h / 2) * scaleY;
 
-  // Scale factor: zoom enough so the bbox fills the canvas minus margin
   const bboxDomW = bbox.w * scaleX;
   const bboxDomH = bbox.h * scaleY;
   const scaleNeeded = Math.min(
     (cw * (1 - margin)) / bboxDomW,
     (ch * (1 - margin)) / bboxDomH,
-    3.2, // max zoom cap
+    3.2,
   );
 
-  // Translate: move bboxCenter to canvas center
-  // After scale, point P at (bboxCenterX, bboxCenterY) maps to:
-  //   P' = scale * P + translate  (transform-origin: center = cw/2, ch/2)
-  // We want P' = (cw/2, ch/2), so:
-  //   translate = (cw/2, ch/2) - scale * (bboxCenterX - cw/2, bboxCenterY - ch/2) - (cw/2, ch/2)
-  //             = -scale * (bboxCenterX - cw/2, bboxCenterY - ch/2)
   const tx = -scaleNeeded * (bboxCenterX - cw / 2);
   const ty = -scaleNeeded * (bboxCenterY - ch / 2);
 
@@ -363,7 +348,6 @@ function VariantBZoom({
 
   const [camera, setCamera] = useState<CameraTarget>({ scale: 1, tx: 0, ty: 0 });
 
-  // Recompute camera on step change or resize
   const recompute = useCallback(() => {
     if (!canvasRef.current) return;
     setCamera(computeCamera(bbox, canvasRef.current));
@@ -381,7 +365,6 @@ function VariantBZoom({
     return () => ro.disconnect();
   }, [canvasRef, recompute]);
 
-  // Springs for smooth camera motion
   const springScale = useSpringValue(camera.scale, 0.5);
   const springTx = useSpringValue(camera.tx, 0.5);
   const springTy = useSpringValue(camera.ty, 0.5);
@@ -389,7 +372,6 @@ function VariantBZoom({
   const transform =
     `translate(${springTx.toFixed(2)}px, ${springTy.toFixed(2)}px) scale(${springScale.toFixed(4)})`;
 
-  // Ring overlay: only shown when zoomed in (not overview)
   const ringRef = useRef<HTMLDivElement>(null);
   const isOverview = bbox === null;
 
@@ -432,14 +414,7 @@ function VariantBZoom({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Variant C — Borde / Halo de marca
-//
-// Técnica: la imagen base se atenúa levemente (brightness + saturate).
-// Un ring DOM (div absolutamente posicionado) marca la bbox activa
-// con borde Slalom Blue + sombra/glow.
-//
-// El indicador de conexión (línea del texto al ring) se implementa con un
-// <svg> posicionado absolute que se regenera cuando cambia el paso.
+// Variant C — Borde / Halo de marca (ORIGINAL — mantener para comparar)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function VariantCHalo({
@@ -458,9 +433,7 @@ function VariantCHalo({
     const ring = ringRef.current;
     const canvas = canvasRef.current;
     if (!ring || !canvas || isOverview) {
-      if (ring) {
-        ring.dataset.hidden = "true";
-      }
+      if (ring) ring.dataset.hidden = "true";
       return;
     }
 
@@ -499,8 +472,310 @@ function VariantCHalo({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Variant C1 — Halo suave sin contorno
+//
+// Técnica: overlay DOM con box-shadow muy difuso + scale leve con spring.
+// SIN border nítido: un desajuste de 2-3px en la proyección es invisible
+// porque la sombra difusa lo absorbe. Fondo casi sin atenuar.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function VariantC1SoftHalo({
+  activeStep,
+  canvasRef,
+}: {
+  activeStep: number;
+  canvasRef: React.RefObject<HTMLDivElement>;
+}): React.ReactElement {
+  const bbox = SH_FOCUS_BOXES[activeStep] ?? null;
+  const isOverview = bbox === null;
+
+  // Target scale: 1.02 when active, 1 when overview
+  const scaleTarget = isOverview ? 1 : 1.02;
+  const springScale = useSpringValue(scaleTarget, 0.4);
+
+  const glowRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const glow = glowRef.current;
+    const canvas = canvasRef.current;
+    if (!glow || !canvas || isOverview) {
+      if (glow) glow.dataset.hidden = "true";
+      return;
+    }
+
+    const projected = projectBBox(bbox!, canvas);
+    if (!projected) return;
+
+    // Extra padding to make the glow extend generously beyond the element
+    const PAD = 16;
+    glow.style.left = `${projected.left - PAD}px`;
+    glow.style.top = `${projected.top - PAD}px`;
+    glow.style.width = `${projected.width + PAD * 2}px`;
+    glow.style.height = `${projected.height + PAD * 2}px`;
+    glow.style.transform = `scale(${springScale.toFixed(4)})`;
+    glow.dataset.hidden = "false";
+  }, [activeStep, bbox, isOverview, canvasRef, springScale]);
+
+  return (
+    <div
+      className="proto-canvas proto-canvas--soft-halo"
+      ref={canvasRef}
+      aria-hidden="true"
+    >
+      <img
+        src={selfHealingFlowSvgUrl}
+        alt=""
+        className="proto-canvas__img proto-soft-halo-img"
+        draggable={false}
+        aria-hidden="true"
+      />
+      {/* Glow overlay — no border, only diffuse shadow */}
+      <div
+        ref={glowRef}
+        className="proto-soft-halo-glow"
+        data-hidden="true"
+      />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Variant C2 — Halo suave + atenuación
+//
+// Técnica: C1 (glow difuso) + capa de desaturación del fondo (como A, pero
+// con atenuación más suave: opacity 0.5 / saturate 0.15 en lugar de 0.08/0.38).
+// Doble señal de foco: el ojo sigue el área con color + glow; la imprecisión
+// del halo es menos perceptible porque la atenuación global ya dirige la atención.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function VariantC2HaloPlusDim({
+  activeStep,
+  canvasRef,
+}: {
+  activeStep: number;
+  canvasRef: React.RefObject<HTMLDivElement>;
+}): React.ReactElement {
+  const bbox = SH_FOCUS_BOXES[activeStep] ?? null;
+  const isOverview = bbox === null;
+
+  const scaleTarget = isOverview ? 1 : 1.02;
+  const springScale = useSpringValue(scaleTarget, 0.4);
+
+  const [clipPath, setClipPath] = useState<string>("inset(0 0 0 0)");
+  const glowRef = useRef<HTMLDivElement>(null);
+
+  // Reuse clip-path mechanism from A for the color layer
+  useEffect(() => {
+    if (isOverview || !canvasRef.current) {
+      setClipPath("inset(0 0 0 0)");
+      return;
+    }
+    const canvas = canvasRef.current;
+    const projected = projectBBox(bbox!, canvas);
+    if (!projected) return;
+
+    const { left, top, width, height } = projected;
+    const PAD = 14; // slightly larger pad than A for a softer edge
+    const cw = canvas.clientWidth;
+    const ch = canvas.clientHeight;
+
+    const t = Math.max(0, top - PAD);
+    const r = Math.max(0, cw - (left + width + PAD));
+    const b = Math.max(0, ch - (top + height + PAD));
+    const l = Math.max(0, left - PAD);
+
+    setClipPath(`inset(${t}px ${r}px ${b}px ${l}px round 14px)`);
+  }, [activeStep, bbox, isOverview, canvasRef]);
+
+  // Glow overlay positioning
+  useEffect(() => {
+    const glow = glowRef.current;
+    const canvas = canvasRef.current;
+    if (!glow || !canvas || isOverview) {
+      if (glow) glow.dataset.hidden = "true";
+      return;
+    }
+
+    const projected = projectBBox(bbox!, canvas);
+    if (!projected) return;
+
+    const PAD = 16;
+    glow.style.left = `${projected.left - PAD}px`;
+    glow.style.top = `${projected.top - PAD}px`;
+    glow.style.width = `${projected.width + PAD * 2}px`;
+    glow.style.height = `${projected.height + PAD * 2}px`;
+    glow.style.transform = `scale(${springScale.toFixed(4)})`;
+    glow.dataset.hidden = "false";
+  }, [activeStep, bbox, isOverview, canvasRef, springScale]);
+
+  return (
+    <div
+      className="proto-canvas proto-canvas--halo-dim"
+      ref={canvasRef}
+      aria-hidden="true"
+    >
+      {/* Capa gris base — siempre visible, atenuación suave */}
+      <img
+        src={selfHealingFlowSvgUrl}
+        alt=""
+        className="proto-canvas__img proto-halo-dim-base"
+        draggable={false}
+        aria-hidden="true"
+        data-overview={isOverview ? "true" : "false"}
+      />
+      {/* Capa color — recortada a la bbox activa */}
+      <img
+        src={selfHealingFlowSvgUrl}
+        alt=""
+        className="proto-canvas__img proto-halo-dim-active"
+        draggable={false}
+        aria-hidden="true"
+        style={{
+          clipPath: isOverview ? "inset(0 0 0 0)" : clipPath,
+        }}
+      />
+      {/* Glow overlay — sin border, sombra difusa */}
+      <div
+        ref={glowRef}
+        className="proto-soft-halo-glow proto-soft-halo-glow--c2"
+        data-hidden="true"
+      />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Variant C3 — Resalte pintado dentro del SVG (inline SVG)
+//
+// Técnica: el SVG se importa como texto raw (selfHealingFlowSvgRaw) y se inyecta
+// directamente en el DOM con dangerouslySetInnerHTML. Sobre el <g> raíz del SVG
+// se añade un <g class="proto-c3-highlights"> con <rect> elements en coords del
+// viewBox (los mismos SH_FOCUS_BOXES), con un SVG filter de blur/glow.
+//
+// Como el <rect> de realce vive en el viewBox del SVG, escala junto con el
+// diagrama sin ningún cálculo DOM — imposible desalinearse.
+//
+// LIMITACIÓN CONOCIDA: el SVG de Lucid no tiene <g id="..."> semánticos. Los
+// <rect> de realce se dibujan por bbox (SH_FOCUS_BOXES) en el mismo sistema de
+// coords, lo cual es robusto. El translate(-259 0) del <g> raíz ya está
+// compensado en SH_FOCUS_BOXES (son coords del viewBox externo, no del <g> interno).
+//
+// SEGURIDAD: dangerouslySetInnerHTML se usa sobre un asset bundleado (no datos
+// externos); el SVG es un archivo local controlado. No hay contenido dinámico
+// de usuario. El filtro SVG es markup inerte, no ejecuta scripts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Lucid exports SVG with fixed width/height attributes but NO viewBox.
+// For inline SVG to scale correctly via CSS, we need to:
+//   1. Add a viewBox matching the original dimensions (SH_SVG_VB_W x SH_SVG_VB_H)
+//   2. Strip the fixed width/height so CSS controls the size
+//   3. Add preserveAspectRatio="xMidYMid meet" so it behaves like object-fit:contain
+//
+// All coordinate systems (SH_FOCUS_BOXES, the translate(-259 0) on the inner <g>)
+// remain unchanged because viewBox "0 0 W H" with original W/H is identity.
+const C3_SVG_BASE: string = (() => {
+  let s = selfHealingFlowSvgRaw;
+  // 1. Add viewBox (Lucid SVG has no viewBox — uses absolute width/height)
+  if (!s.match(/<svg\b[^>]*viewBox/)) {
+    s = s.replace(
+      /(<svg\b[^>]*?)>/,
+      `$1 viewBox="0 0 ${SH_SVG_VB_W} ${SH_SVG_VB_H}" preserveAspectRatio="xMidYMid meet">`,
+    );
+  }
+  // 2. Strip fixed width/height from <svg> so CSS controls size
+  s = s.replace(/(<svg\b[^>]*?)\s+width="[^"]*"/, "$1");
+  s = s.replace(/(<svg\b[^>]*?)\s+height="[^"]*"/, "$1");
+  return s;
+})();
+
+// Build the SVG markup with the highlight <rect> injected for the active step.
+// We insert a <defs> with the glow filter and a <g> with the highlight rect
+// BEFORE the closing </svg> tag.
+function buildC3Svg(activeStep: number): string {
+  const bbox = SH_FOCUS_BOXES[activeStep] ?? null;
+
+  // The filter id must be stable per step to avoid React reconciliation issues
+  const filterId = "proto-c3-glow";
+  const PAD = 14;
+  const rx = 14; // rounded corners, same as existing highlight rings
+
+  // Slalom Blue color components for the glow
+  const glowColor = "#0C62FB";
+
+  // Build the highlight overlay group
+  let highlightGroup = "";
+  if (bbox !== null) {
+    const hx = Math.max(0, bbox.x - PAD);
+    const hy = Math.max(0, bbox.y - PAD);
+    const hw = Math.min(SH_SVG_VB_W - hx, bbox.w + PAD * 2);
+    const hh = Math.min(SH_SVG_VB_H - hy, bbox.h + PAD * 2);
+
+    highlightGroup = `
+  <defs>
+    <filter id="${filterId}" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
+      <feFlood flood-color="${glowColor}" flood-opacity="0.18" result="flood"/>
+      <feComposite in="flood" in2="SourceGraphic" operator="in" result="colorFill"/>
+      <feGaussianBlur in="colorFill" stdDeviation="18" result="glow"/>
+      <feMerge>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="${filterId}-ring" x="-10%" y="-10%" width="120%" height="120%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="0" stdDeviation="10" flood-color="${glowColor}" flood-opacity="0.55"/>
+    </filter>
+  </defs>
+  <g class="proto-c3-highlights" aria-hidden="true">
+    <!-- Soft fill background — painted in viewBox coords, scales with SVG -->
+    <rect
+      x="${hx}" y="${hy}" width="${hw}" height="${hh}" rx="${rx}"
+      fill="${glowColor}" fill-opacity="0.07"
+      filter="url(#${filterId})"
+    />
+    <!-- Soft ring — no hard border, uses drop-shadow filter -->
+    <rect
+      x="${hx}" y="${hy}" width="${hw}" height="${hh}" rx="${rx}"
+      fill="none"
+      stroke="${glowColor}" stroke-width="2.5" stroke-opacity="0.65"
+      filter="url(#${filterId}-ring)"
+    />
+  </g>`;
+  }
+
+  // Inject before </svg>
+  return C3_SVG_BASE.replace(/<\/svg>\s*$/, `${highlightGroup}</svg>`);
+}
+
+function VariantC3InlineSvg({
+  activeStep,
+}: {
+  activeStep: number;
+}): React.ReactElement {
+  // Build the SVG string with the highlight for this step
+  const svgMarkup = useMemo(() => buildC3Svg(activeStep), [activeStep]);
+
+  return (
+    <div
+      className="proto-canvas proto-canvas--inline-svg"
+      aria-hidden="true"
+    >
+      {/*
+        dangerouslySetInnerHTML: safe here because selfHealingFlowSvgRaw is a
+        bundled asset (not user input). The injected highlight is static markup.
+        No script elements, no external loads. Meets self-hosted CSP.
+      */}
+      <div
+        className="proto-c3-svg-wrap"
+        // eslint-disable-next-line react/no-danger
+        dangerouslySetInnerHTML={{ __html: svgMarkup }}
+      />
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // VariantSection — una instancia completa de la sección scrollytelling
-// para una variante dada. Tiene su propio estado de paso activo.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function VariantSection({
@@ -513,7 +788,6 @@ function VariantSection({
   const [activeStep, setActiveStep] = useState(0);
   const [announcement, setAnnouncement] = useState("");
   const stepRefs = useRef<(HTMLElement | null)[]>([]);
-  // React 18: useRef<T>(null) produces RefObject<T> where current is T | null at runtime
   const canvasRef = useRef<HTMLDivElement>(null);
   const announcerId = useId();
 
@@ -521,10 +795,8 @@ function VariantSection({
   useEffect(() => {
     if (!isVisible) return;
 
-    // rootMargin: activar cuando el bloque está en el 20-65% central de la viewport
     const observer = new IntersectionObserver(
       (entries) => {
-        // Seleccionar el que tenga más intersección (skill §1)
         const visible = entries
           .filter((e) => e.isIntersecting)
           .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
@@ -544,7 +816,7 @@ function VariantSection({
     return () => observer.disconnect();
   }, [isVisible]);
 
-  // Announce step change
+  // Announce step change for screen readers
   useEffect(() => {
     const step = SH_STEPS[activeStep];
     if (!step) return;
@@ -619,7 +891,6 @@ function VariantSection({
 
           {/* ── Diagram column (sticky pin) ── */}
           <div className="proto-diagram-pin" aria-hidden="true">
-            {/* Diagram canvas — switches by variant */}
             {variant.id === "A" && (
               <VariantADesaturate
                 activeStep={activeStep}
@@ -636,6 +907,23 @@ function VariantSection({
               <VariantCHalo
                 activeStep={activeStep}
                 canvasRef={canvasRef}
+              />
+            )}
+            {variant.id === "C1" && (
+              <VariantC1SoftHalo
+                activeStep={activeStep}
+                canvasRef={canvasRef}
+              />
+            )}
+            {variant.id === "C2" && (
+              <VariantC2HaloPlusDim
+                activeStep={activeStep}
+                canvasRef={canvasRef}
+              />
+            )}
+            {variant.id === "C3" && (
+              <VariantC3InlineSvg
+                activeStep={activeStep}
               />
             )}
 
@@ -664,7 +952,9 @@ function VariantSection({
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function ScrollProto(): React.ReactElement {
-  const [activeVariant, setActiveVariant] = useState<Variant>("A");
+  const [activeVariant, setActiveVariant] = useState<Variant>("C1");
+
+  const activeVariantMeta = VARIANTS.find((v) => v.id === activeVariant) ?? VARIANTS[0];
 
   return (
     <div className="proto-root" data-testid="scroll-proto">
@@ -690,7 +980,7 @@ export function ScrollProto(): React.ReactElement {
                   className="proto-tab"
                   onClick={() => setActiveVariant(v.id)}
                 >
-                  {v.id} — {v.title}
+                  {v.label}
                 </button>
               </li>
             ))}
@@ -698,9 +988,7 @@ export function ScrollProto(): React.ReactElement {
         </nav>
 
         <span className="proto-header__step" aria-live="polite">
-          {activeVariant === "A" && "Desaturar"}
-          {activeVariant === "B" && "Zoom / Pan"}
-          {activeVariant === "C" && "Halo"}
+          {activeVariantMeta.title}
         </span>
       </header>
 
