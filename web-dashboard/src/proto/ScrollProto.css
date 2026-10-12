@@ -1,0 +1,595 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   ScrollProto.css — Prototipo scrollytelling: 3 variantes de resalte (sin scrim)
+   Tema claro Slalom · WCAG AA · Poppins/Inter · reduced-motion safe
+
+   LAYOUT: sticky/pinned — diagrama fijo a la derecha, texto desplazable a la
+   izquierda. El sticky pin se desactiva automáticamente con reduced-motion.
+
+   VARIANTES:
+     A — Desaturar/atenuar   (proto-variant--desaturate)
+     B — Zoom/pan cámara    (proto-variant--zoom)     [transform en JS]
+     C — Borde/halo          (proto-variant--halo)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─── Tokens ─────────────────────────────────────────────────────────────── */
+
+.proto-root {
+  /* Paleta Slalom clara (mirrors presentation.css) */
+  --c-bg:          #FFFFFF;
+  --c-bg-alt:      #F5F5F5;
+  --c-text:        #292929;        /* 12.6:1 → AAA */
+  --c-muted:       #525252;        /* 5.9:1 → AA+ */
+  --c-accent:      #0C62FB;        /* Slalom Blue — 4.56:1 AA */
+  --c-navy:        #0F1C41;
+  --c-lime:        #DEFF4D;
+  --c-border:      rgba(15, 28, 65, 0.12);
+  --c-border-mid:  rgba(15, 28, 65, 0.22);
+
+  /* Halo brand ring para variante C */
+  --c-halo-ring:   #0C62FB;
+  --c-halo-glow:   rgba(12, 98, 251, 0.25);
+
+  /* Spacing */
+  --sp-4:  1rem;
+  --sp-6:  1.5rem;
+  --sp-8:  2rem;
+  --sp-12: 3rem;
+
+  /* Typography */
+  --font-head: "Poppins", "Inter", system-ui, sans-serif;
+  --font-body: "Inter", system-ui, sans-serif;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-base: 340ms;
+}
+
+/* ─── Shell ──────────────────────────────────────────────────────────────── */
+
+.proto-root {
+  background: var(--c-bg);
+  min-height: 100vh;
+  font-family: var(--font-body);
+  color: var(--c-text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Header strip */
+.proto-header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--c-border);
+  padding: 0.875rem 2rem;
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.proto-header__label {
+  font-family: var(--font-head);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--c-muted);
+  flex-shrink: 0;
+}
+
+/* Variant picker tabs */
+.proto-tabs {
+  display: flex;
+  gap: 0.375rem;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  background: var(--c-bg-alt);
+  border-radius: 10px;
+  padding: 0.25rem;
+}
+
+.proto-tab {
+  font-family: var(--font-head);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--c-muted);
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  padding: 0.375rem 0.875rem;
+  cursor: pointer;
+  transition: background var(--dur-base) var(--ease-out),
+              color var(--dur-base) var(--ease-out),
+              box-shadow var(--dur-base) var(--ease-out);
+  white-space: nowrap;
+}
+
+.proto-tab:hover {
+  color: var(--c-navy);
+}
+
+.proto-tab[aria-selected="true"] {
+  background: #FFFFFF;
+  color: var(--c-accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.10), 0 0 0 1px var(--c-border);
+}
+
+.proto-tab:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 2px;
+}
+
+/* Step counter badge (top-right) */
+.proto-header__step {
+  margin-left: auto;
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--c-accent);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+/* ─── Variant section ────────────────────────────────────────────────────── */
+
+.proto-section {
+  /* Shown/hidden by the tab toggle in JS */
+}
+
+.proto-section--hidden {
+  display: none;
+}
+
+/* Intro banner above each variant */
+.proto-variant-label {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 1rem 2rem 0.75rem;
+  border-bottom: 1px solid var(--c-border);
+  background: var(--c-bg);
+}
+
+.proto-variant-label__tag {
+  font-family: var(--font-head);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #FFFFFF;
+  background: var(--c-navy);
+  border-radius: 5px;
+  padding: 0.2rem 0.5rem;
+  flex-shrink: 0;
+}
+
+.proto-variant-label__title {
+  font-family: var(--font-head);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--c-navy);
+  margin: 0;
+}
+
+.proto-variant-label__desc {
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
+  color: var(--c-muted);
+  margin: 0;
+  margin-left: auto;
+  text-align: right;
+  max-width: 28rem;
+}
+
+/* ─── Story layout (sticky pattern) ─────────────────────────────────────── */
+/*
+  Grid: texto (0.8fr) · diagrama (1.2fr)
+  Texto hace scroll; diagrama está pegado con sticky.
+  skill scroll-storytelling §1 pattern base.
+*/
+
+.proto-story {
+  display: grid;
+  grid-template-columns: minmax(16rem, 0.8fr) minmax(0, 1.2fr);
+  gap: clamp(1.5rem, 5vw, 5rem);
+  padding: 0 2rem;
+  align-items: start;
+}
+
+/* ── Text column ── */
+.proto-steps {
+  padding-top: 4rem;
+  padding-bottom: 40vh; /* espacio para que el último paso llegue a zona de lectura */
+}
+
+.proto-step {
+  min-height: 70vh;
+  display: grid;
+  align-content: center;
+  padding-block: 2rem;
+
+  /* Reveal por scroll: inactivo = atenuado y ligeramente desplazado */
+  opacity: 0.42;
+  transform: translateY(1.25rem);
+  transition:
+    opacity 280ms var(--ease-out),
+    transform 340ms var(--ease-out);
+}
+
+.proto-step[data-active="true"] {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Separador decorativo entre pasos */
+.proto-step + .proto-step {
+  border-top: 1px solid var(--c-border);
+  padding-top: 3rem;
+}
+
+.proto-step__num {
+  font-family: var(--font-head);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--c-accent);
+  margin-bottom: 0.625rem;
+}
+
+.proto-step__title {
+  font-family: var(--font-head);
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--c-navy);
+  margin: 0 0 1rem;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.proto-step__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.proto-step__item {
+  font-size: 0.9375rem;
+  color: var(--c-text);
+  line-height: 1.65;
+  padding-left: 1.25rem;
+  position: relative;
+}
+
+.proto-step__item::before {
+  content: "▸";
+  position: absolute;
+  left: 0;
+  color: var(--c-accent);
+  font-size: 0.8125rem;
+  line-height: 2;
+}
+
+/* ── Diagram column ── */
+.proto-diagram-pin {
+  position: sticky;
+  top: calc(3.5rem + 2vh); /* deja espacio para el header sticky */
+  align-self: start;
+  height: min(80vh, 55vw);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* ─── Base canvas para el diagrama ──────────────────────────────────────── */
+
+.proto-canvas {
+  flex: 1;
+  position: relative;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #F9FAFB;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06), 0 8px 32px rgba(0,0,0,0.07);
+  border: 1px solid var(--c-border);
+}
+
+.proto-canvas__img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center center;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* ─══════════════════════════════════════════════════════════════════════════
+   VARIANTE A — DESATURAR/ATENUAR
+   Técnica: overlay SVG con recorte de la bbox activa que aplica saturate(0)
+   al área fuera del foco. Se implementa con dos capas:
+     1. La imagen base (color normal)
+     2. Un overlay que aplica filter:grayscale/opacity al CLIP INVERSO
+        (todo el SVG menos la bbox activa)
+   Con SVG-as-img, no se puede alterar internamente el SVG.
+   Solución: overlay DOM con clip-path polygon inverso + filtro.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.proto-canvas--desaturate {
+  /* No overflow: visible para el pseudo clip */
+}
+
+/* Capa de atenuación — calculada dinámicamente en JS via --bbox-* CSS vars */
+.proto-desat-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transition:
+    opacity 320ms var(--ease-out),
+    clip-path 360ms var(--ease-out);
+}
+
+/* Cuando no hay paso activo (overview), no se muestra */
+.proto-desat-overlay[data-inactive="true"] {
+  opacity: 0;
+}
+
+/* Imagen "gris" debajo de la activa: duplicada con filter */
+.proto-desat-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center center;
+  /* Atenuar todo */
+  filter: saturate(0.08) opacity(0.38);
+  transition: filter 360ms var(--ease-out);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* Imagen "viva" encima, recortada a la bbox activa */
+.proto-desat-active {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center center;
+  /* clip-path se setea dinámicamente desde JS usando las vars */
+  transition: clip-path 360ms var(--ease-out);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* ─══════════════════════════════════════════════════════════════════════════
+   VARIANTE B — ZOOM/PAN CÁMARA
+   El transform (scale + translate) se aplica vía CSS var calculado en JS
+   con el spring de useSpring. Encuadra la bbox activa con margen de contexto.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.proto-canvas--zoom {
+  overflow: hidden;
+}
+
+.proto-zoom-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center center;
+  /* Transform se inyecta desde JS */
+  transform-origin: center center;
+  will-change: transform;
+  transition: none; /* JS maneja el spring */
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* Indicador de encuadre (ring liviano alrededor del área, para la variante B) */
+.proto-zoom-ring {
+  position: absolute;
+  border-radius: 10px;
+  border: 2.5px solid rgba(12, 98, 251, 0.70);
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,0.25),
+    inset 0 0 0 1px rgba(255,255,255,0.12);
+  pointer-events: none;
+  transition:
+    top 360ms var(--ease-out),
+    left 360ms var(--ease-out),
+    width 360ms var(--ease-out),
+    height 360ms var(--ease-out),
+    opacity 280ms var(--ease-out);
+}
+
+.proto-zoom-ring[data-hidden="true"] {
+  opacity: 0;
+}
+
+/* ─══════════════════════════════════════════════════════════════════════════
+   VARIANTE C — BORDE/HALO
+   La imagen queda al 100% color. El halo se dibuja como overlay DOM posicionado
+   con las coordenadas de la bbox activa (calculadas en JS).
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.proto-canvas--halo {
+  /* normal */
+}
+
+.proto-halo-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center center;
+  /* Resto atenuado muy levemente (no oscurecido) */
+  transition: filter 360ms var(--ease-out);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.proto-halo-img[data-has-active="true"] {
+  filter: brightness(0.88) saturate(0.85);
+}
+
+/* El halo se posiciona dinámicamente en JS */
+.proto-halo-ring {
+  position: absolute;
+  border-radius: 12px;
+  border: 3px solid var(--c-halo-ring);
+  box-shadow:
+    0 0 0 6px var(--c-halo-glow),
+    0 4px 24px rgba(12, 98, 251, 0.22);
+  pointer-events: none;
+  /* Lift */
+  transform: scale(1.02);
+  transform-origin: center;
+  background: rgba(12, 98, 251, 0.035);
+  transition:
+    top 360ms var(--ease-out),
+    left 360ms var(--ease-out),
+    width 360ms var(--ease-out),
+    height 360ms var(--ease-out),
+    opacity 280ms var(--ease-out),
+    transform 360ms var(--ease-out);
+}
+
+.proto-halo-ring[data-hidden="true"] {
+  opacity: 0;
+  transform: scale(1);
+}
+
+/* Conector: línea desde el texto hacia el halo (decorativa, aria-hidden) */
+.proto-halo-connector {
+  position: absolute;
+  pointer-events: none;
+  /* svg element, se posiciona dinámicamente */
+  opacity: 0.55;
+  transition: opacity 240ms var(--ease-out);
+}
+
+.proto-halo-connector[data-hidden="true"] {
+  opacity: 0;
+}
+
+/* ─── Leyenda / step label bajo el diagrama ─────────────────────────────── */
+
+.proto-step-label {
+  font-family: var(--font-head);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--c-muted);
+  text-align: center;
+  letter-spacing: 0.02em;
+  height: 1.5rem;
+  transition: opacity 200ms ease;
+}
+
+.proto-step-label span {
+  color: var(--c-accent);
+  font-weight: 700;
+}
+
+/* ─── Accessible live region ─────────────────────────────────────────────── */
+
+.proto-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+  pointer-events: none;
+}
+
+/* ─── Reduced-motion ─────────────────────────────────────────────────────── */
+/*
+  Con reduced-motion: desactivar sticky/zoom/parallax completamente.
+  La historia se lee como flujo estático normal.
+  skill scroll-storytelling §4, §8.
+*/
+
+@media (prefers-reduced-motion: reduce) {
+  .proto-diagram-pin {
+    position: static;
+    height: auto;
+    min-height: 50vw;
+  }
+
+  .proto-step {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
+  }
+
+  .proto-story {
+    display: block;
+  }
+
+  .proto-zoom-img {
+    transform: none !important;
+    transition: none !important;
+    will-change: auto;
+  }
+
+  .proto-zoom-ring,
+  .proto-halo-ring,
+  .proto-halo-connector,
+  .proto-desat-active {
+    transition: none;
+  }
+}
+
+/* ─── Responsive: colapso a 1 columna en <768px ──────────────────────────── */
+
+@media (max-width: 48rem) {
+  .proto-story {
+    display: block;
+    padding: 0 1rem;
+  }
+
+  .proto-diagram-pin {
+    position: relative;
+    top: auto;
+    height: 50vw;
+    min-height: 200px;
+    margin-bottom: 2rem;
+  }
+
+  .proto-step {
+    min-height: auto;
+    padding-block: 2rem;
+  }
+
+  .proto-steps {
+    padding-bottom: 4rem;
+  }
+
+  .proto-variant-label {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.375rem;
+    padding: 0.875rem 1rem;
+  }
+
+  .proto-variant-label__desc {
+    margin-left: 0;
+    text-align: left;
+  }
+
+  .proto-header {
+    padding: 0.75rem 1rem;
+  }
+}

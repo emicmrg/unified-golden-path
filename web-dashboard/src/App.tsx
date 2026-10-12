@@ -14,6 +14,8 @@ import { Deck } from "./presentation/Deck.js";
 import { FleetHealth } from "./components/FleetHealth.js";
 import { GoldenPath } from "./components/GoldenPath.js";
 import { SelfHealing } from "./components/SelfHealing.js";
+// Proto: aditivo, aislado — solo se carga con ?proto=scroll
+import { ScrollProto } from "./proto/ScrollProto.js";
 
 type Tab = "fleet" | "golden" | "healing";
 
@@ -200,6 +202,15 @@ export function App(): React.ReactElement {
   const isDashboardMode =
     typeof window !== "undefined" &&
     new URLSearchParams(window.location.search).get("mode") === "dashboard";
+
+  // ?proto=scroll muestra el prototipo scrollytelling (aditivo, no rompe nada)
+  const isScrollProto =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("proto") === "scroll";
+
+  if (isScrollProto) {
+    return <ScrollProto />;
+  }
 
   if (isDashboardMode) {
     return <DashboardShell />;
