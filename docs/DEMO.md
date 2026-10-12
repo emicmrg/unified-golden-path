@@ -21,19 +21,18 @@ aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table
   gh variable list --repo "$REPO"
   ```
 
-- **Deck:** open `<AMPLIFY_DECK_URL>`. Obtain the real URL from the `AmplifyDefaultDomain` output of `DashboardStack` (the manual Amplify deployment is documented in [`DEPLOYMENT.md` §4.5](DEPLOYMENT.md#45-build-and-deploy-the-web-dashboard-to-amplify)).
-
-  ```bash
-  AMPLIFY_DECK_URL="https://$(aws cloudformation describe-stacks \
-    --stack-name DashboardStack \
-    --query "Stacks[0].Outputs[?OutputKey=='AmplifyDefaultDomain'].OutputValue" \
-    --output text)"
-  echo "$AMPLIFY_DECK_URL"
-  ```
+- **Deck:** open <https://main.d2nznld4keqy10.amplifyapp.com> (already deployed; `AmplifyDefaultDomain` output of `DashboardStack`).
 
   The deck is the default app mode. The original tab dashboard is available at `?mode=dashboard`.
 
-  If the deck has not yet been deployed to Amplify, `<AMPLIFY_DECK_URL>` will return 404; run [`DEPLOYMENT.md` §4.5](DEPLOYMENT.md#45-build-and-deploy-the-web-dashboard-to-amplify) before the talk.
+  If the Amplify deployment was redeployed and the URL changed, obtain the current URL from the stack output:
+
+  ```bash
+  aws cloudformation describe-stacks \
+    --stack-name DashboardStack \
+    --query "Stacks[0].Outputs[?OutputKey=='AmplifyDefaultDomain'].OutputValue" \
+    --output text
+  ```
 
 - **Circuit breaker:** `MAX_ATTEMPTS=2` is the configured limit. Do not replay an old failed run; use a new commit and push below so GitHub creates a fresh workflow run ID and therefore a fresh `run_key`.
 
@@ -67,7 +66,7 @@ aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table
 
 ### 1. Start with the deck
 
-Open the deck at `<AMPLIFY_DECK_URL>` and navigate to **Diagram C — Self-Healing Flow — GitHub ↔ AWS**. Set up the story: CI fails, GitHub Actions assumes `ugp-ci-deploy-role` through OIDC, and the workflow dispatches an isolated Fargate job. Mention that Diagram A is the AWS architecture and Diagram B is the CrewAI agent collaboration; return to Diagram C for the live sequence.
+Open the deck at <https://main.d2nznld4keqy10.amplifyapp.com> and navigate to **Diagram C — Self-Healing Flow — GitHub ↔ AWS**. Set up the story: CI fails, GitHub Actions assumes `ugp-ci-deploy-role` through OIDC, and the workflow dispatches an isolated Fargate job. Mention that Diagram A is the AWS architecture and Diagram B is the CrewAI agent collaboration; return to Diagram C for the live sequence.
 
 ### 2. Inject Bug A and push it
 
