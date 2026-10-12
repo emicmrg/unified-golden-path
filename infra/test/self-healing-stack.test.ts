@@ -9,9 +9,26 @@ const TEST_ENV = { region: "us-east-1", account: "123456789012" } as const;
 const PROFILE_ID = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
 const MODEL_ID = "anthropic.claude-sonnet-4-5-20250929-v1:0";
 
+/** Immutable GitHub ids used by the tests (any positive integer works). */
+const DEMO_OWNER_ID = "4242";
+const DEMO_REPO_ID = "987654";
+
+/** org/repo pair used by the tests, for cases that must get past the placeholder guard. */
+const DEMO_REPO = { githubOrg: "demo-org", githubRepo: "demo-repo" } as const;
+
+/** `sub` both OIDC roles must require with the ids above (BRANCH scope). */
+const DEMO_SUBJECT = `repo:demo-org@${DEMO_OWNER_ID}/demo-repo@${DEMO_REPO_ID}:ref:refs/heads/main`;
+
 function synth(props: Partial<SelfHealingStackProps> = {}): Template {
   const app = new cdk.App();
-  const stack = new SelfHealingStack(app, "TestSelfHealingStack", { env: TEST_ENV, ...props });
+  const stack = new SelfHealingStack(app, "TestSelfHealingStack", {
+    env: TEST_ENV,
+    // Default to the immutable-id subject: it is what the stack produces for the real
+    // repository, so the tests exercise the same code path as a deploy.
+    githubOwnerId: DEMO_OWNER_ID,
+    githubRepoId: DEMO_REPO_ID,
+    ...props,
+  });
   return Template.fromStack(stack);
 }
 
@@ -351,8 +368,7 @@ describe("SelfHealingStack — crew runner", () => {
               Condition: {
                 StringEquals: {
                   "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-                  "token.actions.githubusercontent.com:sub":
-                    "repo:demo-org/demo-repo:ref:refs/heads/main",
+                  "token.actions.githubusercontent.com:sub": DEMO_SUBJECT,
                 },
               },
             }),
@@ -383,7 +399,7 @@ describe("SelfHealingStack — crew runner", () => {
       ) as any;
       const cond = ci.Properties.AssumeRolePolicyDocument.Statement[0].Condition;
       expect(cond.StringLike["token.actions.githubusercontent.com:sub"]).toBe(
-        "repo:demo-org/demo-repo:*",
+        `repo:demo-org@${DEMO_OWNER_ID}/demo-repo@${DEMO_REPO_ID}:*`,
       );
       expect(cond.StringEquals["token.actions.githubusercontent.com:aud"]).toBe(
         "sts.amazonaws.com",
@@ -460,8 +476,7 @@ describe("SelfHealingStack — crew runner", () => {
               Condition: {
                 StringEquals: {
                   "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-                  "token.actions.githubusercontent.com:sub":
-                    "repo:demo-org/demo-repo:ref:refs/heads/main",
+                  "token.actions.githubusercontent.com:sub": DEMO_SUBJECT,
                 },
               },
             }),
@@ -482,7 +497,7 @@ describe("SelfHealingStack — crew runner", () => {
       const doc = flat(bedrockCiRole().Properties.AssumeRolePolicyDocument);
       expect(doc).not.toContain("StringLike");
       expect(doc).not.toContain("repo:demo-org/*");
-      expect(doc).not.toContain("repo:demo-org/demo-repo:*");
+      expect(doc).not.toContain(`repo:demo-org@${DEMO_OWNER_ID}/demo-repo@${DEMO_REPO_ID}:*`);
     });
 
     it("REGRESSION: ciSubjectScope=REPOSITORY does NOT widen this role (only the deploy role)", () => {
@@ -495,9 +510,7 @@ describe("SelfHealingStack — crew runner", () => {
       });
       const cond = bedrockCiRole(t).Properties.AssumeRolePolicyDocument.Statement[0].Condition;
       expect(cond.StringLike).toBeUndefined();
-      expect(cond.StringEquals["token.actions.githubusercontent.com:sub"]).toBe(
-        "repo:demo-org/demo-repo:ref:refs/heads/main",
-      );
+      expect(cond.StringEquals["token.actions.githubusercontent.com:sub"]).toBe(DEMO_SUBJECT);
     });
 
     it("Bedrock: the same 4 ARNs as the task role and nothing else", () => {
@@ -658,6 +671,103 @@ describe("SelfHealingStack — crew runner", () => {
         Match.stringLikeRegexp("placeholder"),
       );
       expect(warnings.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("OIDC — immutable `sub` format (owner/repository ids)", () => {
+    /** The `sub` required by `roleName` in a synthesized template. */
+    function subjectOf(t: Template, roleName: string): string {
+      const role = Object.values(t.findResources("AWS::IAM::Role")).find(
+        (r: any) => r.Properties?.RoleName === roleName,
+      ) as any;
+      expect(role).toBeDefined();
+      const cond = role.Properties.AssumeRolePolicyDocument.Statement[0].Condition;
+      return (cond.StringEquals ?? cond.StringLike)["token.actions.githubusercontent.com:sub"];
+    }
+
+    it("Both roles embed the immutable ids: repo:<org>@<ownerId>/<repo>@<repoId>", () => {
+      ["ugp-ci-deploy-role", "ugp-bedrock-ci-role"].forEach((roleName) => {
+        expect(subjectOf(template, roleName)).toBe(DEMO_SUBJECT);
+      });
+    });
+
+    it("REGRESSION: the real repo gets the DEPLOYED subject with no extra context", () => {
+      // This is the exact string in the trust policy of both roles in account 363509146455.
+      // Guards against a `cdk deploy` reverting the OIDC trust to the classic format, which
+      // GitHub never emits for this repository (every assume-role would be denied).
+      const t = synth({
+        githubOrg: "emicmrg",
+        githubRepo: "unified-golden-path",
+        githubOwnerId: undefined,
+        githubRepoId: undefined,
+      });
+      const expected = "repo:emicmrg@72321567/unified-golden-path@1407588083:ref:refs/heads/main";
+      ["ugp-ci-deploy-role", "ugp-bedrock-ci-role"].forEach((roleName) => {
+        expect(subjectOf(t, roleName)).toBe(expected);
+      });
+    });
+
+    it("FAIL-CLOSED: an unknown org/repo without ids THROWS instead of using the classic sub", () => {
+      expect(() =>
+        synth({
+          githubOrg: "other-org",
+          githubRepo: "other-repo",
+          githubOwnerId: undefined,
+          githubRepoId: undefined,
+        }),
+      ).toThrow(/immutable GitHub ids|ugp:githubOwnerId/);
+    });
+
+    it("ESCAPE HATCH: -c ugp:allowLegacyOidcSubject=true keeps the classic sub and warns", () => {
+      const app = new cdk.App({ context: { "ugp:allowLegacyOidcSubject": "true" } });
+      const stack = new SelfHealingStack(app, "LegacySubjectStack", {
+        env: TEST_ENV,
+        githubOrg: "other-org",
+        githubRepo: "other-repo",
+      });
+      const t = Template.fromStack(stack);
+      ["ugp-ci-deploy-role", "ugp-bedrock-ci-role"].forEach((roleName) => {
+        expect(subjectOf(t, roleName)).toBe("repo:other-org/other-repo:ref:refs/heads/main");
+      });
+      expect(
+        Annotations.fromStack(stack).findWarning("*", Match.stringLikeRegexp("CLASSIC subject"))
+          .length,
+      ).toBeGreaterThan(0);
+    });
+
+    it("A half-filled id pair is a configuration error, not a silent fallback", () => {
+      expect(() => synth({ ...DEMO_REPO, githubRepoId: undefined })).toThrow(
+        /must be provided together/,
+      );
+      expect(() => synth({ ...DEMO_REPO, githubOwnerId: undefined })).toThrow(
+        /must be provided together/,
+      );
+      // Not even for the repo whose ids the stack knows: ignoring a passed-in id is worse.
+      expect(() =>
+        synth({
+          githubOrg: "emicmrg",
+          githubRepo: "unified-golden-path",
+          githubRepoId: undefined,
+        }),
+      ).toThrow(/must be provided together/);
+    });
+
+    it("Non-numeric ids throw at synth (they could never match a token)", () => {
+      expect(() => synth({ ...DEMO_REPO, githubOwnerId: "not-a-number" })).toThrow(
+        /positive integer/,
+      );
+      expect(() => synth({ ...DEMO_REPO, githubRepoId: "0" })).toThrow(/positive integer/);
+    });
+
+    it("Blank context values are treated as missing (fail-closed, not an empty id)", () => {
+      expect(() =>
+        synth({
+          githubOrg: "other-org",
+          githubRepo: "other-repo",
+          githubOwnerId: "   ",
+          githubRepoId: "",
+        }),
+      ).toThrow(/immutable GitHub ids/);
     });
   });
 

@@ -39,11 +39,53 @@ const DEFAULTS = {
    * Without it the stack fails closed (see the guard in the constructor).
    */
   allowPlaceholderRepoContextKey: "ugp:allowPlaceholderRepo",
+  /**
+   * Context key that opts IN to the CLASSIC `sub` format (`repo:<org>/<repo>:...`) when the
+   * immutable owner/repository ids are unknown. Without it the stack fails closed.
+   */
+  allowLegacyOidcSubjectContextKey: "ugp:allowLegacyOidcSubject",
   /** Branch the OIDC `sub` of the CI role is scoped to (not crew config). */
   ciBranch: "main",
   /** Circuit breaker attempt cap. Must fit the 1..10 range of config.py. */
   maxAttempts: 2,
 } as const;
+
+/** Immutable numeric ids of a GitHub repository, as they appear in the OIDC `sub` claim. */
+interface GithubImmutableIds {
+  readonly ownerId: string;
+  readonly repoId: string;
+}
+
+/**
+ * VERSIONED registry of the immutable GitHub ids, keyed by `<org>/<repo>`.
+ *
+ * Why this exists instead of a literal inside the construct: GitHub issues the `sub` claim of
+ * this repository in its IMMUTABLE form (`repo:<org>@<ownerId>/<repo>@<repoId>:...`) because the
+ * repo opted into immutable unique ids in its OIDC settings. A trust policy pinned to the
+ * classic form is DENIED — it already broke every self-healing dispatch on 2025-10-08. The ids
+ * were therefore patched straight onto the deployed role, which left the deployment depending on
+ * a manual edit: the next `cdk deploy` would have silently reverted it.
+ *
+ * Keying by `<org>/<repo>` is what makes it safe to ship the values in the repo: a fork that
+ * passes its OWN `ugp:githubOrg/ugp:githubRepo` does not inherit these ids — it gets the
+ * fail-closed error below, which tells it how to look up its own.
+ *
+ * Get the ids (read-only, no secrets):
+ *   gh api /repos/<org>/<repo> --jq '{ownerId: .owner.id, repoId: .id}'
+ */
+const KNOWN_GITHUB_IDS: Readonly<Record<string, GithubImmutableIds>> = {
+  "emicmrg/unified-golden-path": { ownerId: "72321567", repoId: "1407588083" },
+} as const;
+
+/**
+ * `undefined` for absent OR blank values.
+ * Context keys arrive as strings: `-c ugp:githubOwnerId=` yields `''`, which must be treated as
+ * "not provided" so the fail-closed guard fires instead of building a subject with an empty id.
+ */
+function nonEmpty(value?: string): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
 
 /** Props of {@link SelfHealingStack}. */
 export interface SelfHealingStackProps extends cdk.StackProps {
@@ -52,6 +94,18 @@ export interface SelfHealingStackProps extends cdk.StackProps {
 
   /** GitHub repository authorized to assume the CI role. */
   readonly githubRepo?: string;
+
+  /**
+   * Immutable numeric GitHub owner id used in the OIDC `sub` claim.
+   * @default looked up in {@link KNOWN_GITHUB_IDS} by `<githubOrg>/<githubRepo>`
+   */
+  readonly githubOwnerId?: string;
+
+  /**
+   * Immutable numeric GitHub repository id used in the OIDC `sub` claim.
+   * @default looked up in {@link KNOWN_GITHUB_IDS} by `<githubOrg>/<githubRepo>`
+   */
+  readonly githubRepoId?: string;
 
   /**
    * ARN of an ALREADY existing secret holding the GitHub App private key.
@@ -167,6 +221,51 @@ export class SelfHealingStack extends cdk.Stack {
           "(NEVER deploy a template synthesized that way).",
       );
     }
+
+    // FAIL-CLOSED on the `sub` FORMAT (separate failure mode from the one above).
+    // GitHub issues this repository's `sub` with the IMMUTABLE ids
+    // (`repo:<org>@<ownerId>/<repo>@<repoId>:...`); a trust policy pinned to the classic
+    // `repo:<org>/<repo>:...` is DENIED by STS. Deploying without the ids would therefore
+    // silently break the self-healing runner, so synth aborts unless the classic format is
+    // chosen EXPLICITLY. Placeholders keep the classic format: that path is local-synth only
+    // and the guard above already demands an opt-in for it.
+    const allowLegacySubjectContext = this.node.tryGetContext(
+      DEFAULTS.allowLegacyOidcSubjectContextKey,
+    );
+    const allowLegacySubject =
+      allowLegacySubjectContext === true || allowLegacySubjectContext === "true";
+    const knownIds = KNOWN_GITHUB_IDS[`${githubOrg}/${githubRepo}`];
+    const explicitOwnerId = nonEmpty(props.githubOwnerId);
+    const explicitRepoId = nonEmpty(props.githubRepoId);
+    // Caught here, before the registry fallback: with only one id provided, falling back to the
+    // known pair would silently ignore the one that WAS passed.
+    if ((explicitOwnerId === undefined) !== (explicitRepoId === undefined)) {
+      throw new Error(
+        `${id}: githubOwnerId and githubRepoId must be provided together (received ` +
+          `githubOwnerId=${JSON.stringify(props.githubOwnerId)}, ` +
+          `githubRepoId=${JSON.stringify(props.githubRepoId)}). The immutable subject is ` +
+          "'repo:<org>@<ownerId>/<repo>@<repoId>:...': half of the pair cannot build it.",
+      );
+    }
+    const githubOwnerId = explicitOwnerId ?? knownIds?.ownerId;
+    const githubRepoId = explicitRepoId ?? knownIds?.repoId;
+    const hasImmutableIds = githubOwnerId !== undefined && githubRepoId !== undefined;
+    if (!hasImmutableIds && !usingPlaceholders && !allowLegacySubject) {
+      throw new Error(
+        `${id}: the immutable GitHub ids of '${githubOrg}/${githubRepo}' are unknown, so the ` +
+          `trust policy of both OIDC roles (${DEFAULTS.ciRoleName}, ` +
+          `${DEFAULTS.bedrockCiRoleName}) would use the classic subject ` +
+          `'repo:${githubOrg}/${githubRepo}:ref:refs/heads/${DEFAULTS.ciBranch}'. If the ` +
+          "repository has immutable unique ids enabled in its OIDC settings (the repository " +
+          "this project is deployed from does), GitHub never emits that subject and " +
+          "sts:AssumeRoleWithWebIdentity is denied. " +
+          "Pass them: -c ugp:githubOwnerId=<ownerId> -c ugp:githubRepoId=<repoId> " +
+          "(gh api /repos/<org>/<repo> --jq '{ownerId: .owner.id, repoId: .id}'). " +
+          `Only if the repository still uses the classic claim: -c ${DEFAULTS.allowLegacyOidcSubjectContextKey}=true.`,
+      );
+    }
+    /** Immutable-id props shared by both OIDC roles. Empty = classic subject. */
+    const immutableSubjectIds = hasImmutableIds ? { githubOwnerId, githubRepoId } : {};
 
     const profileId = props.bedrockInferenceProfileId ?? DEFAULTS.bedrockInferenceProfileId;
     const routedRegions = props.bedrockRoutedRegions ?? DEFAULTS.bedrockRoutedRegions;
@@ -434,6 +533,7 @@ export class SelfHealingStack extends cdk.Stack {
     const oidc = new GithubOidcRole(this, "CiDeployRole", {
       githubOrg,
       githubRepo,
+      ...immutableSubjectIds,
       branch: DEFAULTS.ciBranch,
       subjectScope: props.ciSubjectScope ?? GithubOidcSubjectScope.BRANCH,
       roleName: DEFAULTS.ciRoleName,
@@ -511,6 +611,7 @@ export class SelfHealingStack extends cdk.Stack {
     const bedrockOidc = new GithubOidcRole(this, "BedrockCiRole", {
       githubOrg,
       githubRepo,
+      ...immutableSubjectIds,
       branch: DEFAULTS.ciBranch,
       subjectScope: GithubOidcSubjectScope.BRANCH,
       roleName: DEFAULTS.bedrockCiRoleName,
@@ -647,6 +748,19 @@ export class SelfHealingStack extends cdk.Stack {
           "registers that org/repo on GitHub could assume both roles. " +
           "Before deploying for real: cdk deploy SelfHealingStack " +
           "-c ugp:githubOrg=<org> -c ugp:githubRepo=<repo>",
+      );
+    }
+
+    if (!oidc.usesImmutableSubjectIds && !usingPlaceholders) {
+      // Reached only via the explicit `ugp:allowLegacyOidcSubject=true` opt-in. The condition
+      // reads the subject the construct ACTUALLY built, not the intent resolved above.
+      cdk.Annotations.of(this).addWarningV2(
+        "ugp:self-healing:legacy-oidc-subject",
+        "Both OIDC roles trust the CLASSIC subject " +
+          `'repo:${githubOrg}/${githubRepo}:ref:refs/heads/${DEFAULTS.ciBranch}'. If that ` +
+          "repository has immutable unique ids enabled in its OIDC settings, GitHub emits " +
+          "'repo:<org>@<ownerId>/<repo>@<repoId>:...' instead and every assume-role will be " +
+          "denied. Prefer -c ugp:githubOwnerId=<ownerId> -c ugp:githubRepoId=<repoId>.",
       );
     }
 

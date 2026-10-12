@@ -152,6 +152,66 @@ then assume the roles. Hence the guard.
 Escape hatch for a **local synth only**: `-c ugp:allowPlaceholderRepo=true`.
 **Never deploy a template synthesized that way.**
 
+#### The OIDC `sub` uses GitHub's IMMUTABLE ids — do not deploy without them
+
+Both OIDC roles (`ugp-ci-deploy-role`, `ugp-bedrock-ci-role`) trust this exact subject, which is
+what is **deployed today** in `363509146455`:
+
+```
+repo:emicmrg@72321567/unified-golden-path@1407588083:ref:refs/heads/main
+```
+
+Not the classic `repo:emicmrg/unified-golden-path:ref:refs/heads/main`. The difference is not
+cosmetic:
+
+- GitHub can issue the repository part of the `sub` claim either as `repo:<org>/<repo>` or as
+  `repo:<org>@<ownerId>/<repo>@<repoId>`, where the two numbers are the **immutable** numeric ids
+  of the owner and the repository. The immutable form survives a rename of the repo *or* the
+  owner, and conversely stops whoever re-registers a freed-up `org/repo` name from inheriting the
+  trust — that is why it is the recommended form.
+- Once a repository emits the immutable form, it emits **only** that one. A trust policy pinned to
+  the classic string then matches nothing and `sts:AssumeRoleWithWebIdentity` is **denied**. This
+  is exactly what broke every self-healing dispatch on **2025-10-08** until the ids were put in
+  the trust policy.
+
+The ids are **versioned in the repo**, in a registry keyed by `<org>/<repo>`
+(`KNOWN_GITHUB_IDS` in `infra/src/stacks/self-healing-stack.ts`), so the `CTX_GUARDS` of §4.0
+already produce the deployed subject — **no extra context is needed for this repository** and
+`cdk deploy` is idempotent. Verify it at any time:
+
+```bash
+pnpm --dir infra exec cdk synth SelfHealingStack --quiet \
+  -c ugp:githubOrg=emicmrg -c ugp:githubRepo=unified-golden-path \
+  -c ugp:dashboardAllowedOrigins=https://main.PLACEHOLDER.amplifyapp.com
+grep -o '"token.actions.githubusercontent.com:sub": "[^"]*"' \
+  infra/cdk.out/SelfHealingStack.template.json | sort -u
+# → repo:emicmrg@72321567/unified-golden-path@1407588083:ref:refs/heads/main   (x2 roles)
+```
+
+For **any other** org/repo (a fork, a different owner) the registry has no entry and the stack
+**fails closed**: pass that repository's own ids.
+
+| Context key | Value | Effect if missing |
+|---|---|---|
+| `ugp:githubOwnerId` | `72321567` (already versioned for `emicmrg/unified-golden-path`) | **synth throws** for an unknown org/repo |
+| `ugp:githubRepoId` | `1407588083` (idem) | **synth throws** for an unknown org/repo |
+
+Look them up (read-only, no secrets involved):
+
+```bash
+gh api /repos/<org>/<repo> --jq '{ownerId: .owner.id, repoId: .id}'
+# → {"ownerId":72321567,"repoId":1407588083}
+```
+
+Both keys must be passed **together** — half a pair throws, instead of silently falling back to
+the classic subject. Escape hatch for a repository that still emits the classic claim:
+`-c ugp:allowLegacyOidcSubject=true` (synth then only **warns**). Reach for it only after
+confirming the token's real `sub`: it is the format that already caused the 2025-10-08 outage.
+
+> ⚠️ If you ever see `Not authorized to perform sts:AssumeRoleWithWebIdentity` in a
+> self-healing workflow, read the `sub` GitHub actually sent before touching IAM: the OIDC token
+> claims are visible in the `aws-actions/configure-aws-credentials` step log.
+
 Optional but needed for the Fargate runner to actually authenticate (otherwise synth only
 *warns*, and the container would start and fail against the GitHub API):
 
