@@ -1,4 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="6" fill="#0e7490"/>
-  <text x="16" y="22" font-size="18" text-anchor="middle" fill="white" font-family="sans-serif">U</text>
+  <rect width="32" height="32" rx="7" fill="#0C62FB"/>
+  <!-- Bolt icon — Slalom lime accent -->
+  <path d="M19 4l-8 12h6l-4 12 12-14h-7z" fill="#DEFF4D"/>
 </svg>

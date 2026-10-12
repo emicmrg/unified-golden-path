@@ -56,3 +56,19 @@ htmlcov/
 .idea/
 *.swp
 *.swo
+
+# ─── Playwright MCP screenshots (herramienta de desarrollo local) ────────────
+# Patrones globales — cubren cualquier subdirectorio del repo
+**/.playwright-mcp/
+**/screenshots/
+# Capturas sueltas de Playwright en la raíz del repo
+dashboard-*.png
+playwright-0*.png
+slide-0*.png
+# Capturas de desarrollo del spotlight (step N) — residuales en la raíz
+step[0-9]-*.png
+# SVG de Lucid residuales en la raíz (las copias canónicas están en web-dashboard/src/presentation/assets/)
+/AWS-UnifiedGoldenPath.svg
+/Agent-Diagram.svg
+# Cualquier otro SVG suelto en la raíz (NO afecta web-dashboard/src/**/*.svg)
+/*.svg

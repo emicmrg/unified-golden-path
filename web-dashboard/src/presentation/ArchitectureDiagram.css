@@ -1,0 +1,289 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   ArchitectureDiagram.css — Diagrama A: Lucid SVG background + scrim overlay.
+
+   The Lucid-exported aws-architecture.svg is rendered as a full-bleed
+   background image. A semi-transparent scrim SVG is layered on top to
+   spotlight the active service group.
+
+   LAYOUT:
+     .arch-diagram: flex-row
+       .arch-canvas-wrap (flex-1): contains image + scrim, both position:absolute
+       .arch-sidebar (~30%): service info panel, ALWAYS rendered
+
+   Projection readability (sidebar):
+     title:   22px Poppins 700
+     bullets: 17px Inter 400, leading 1.65
+
+   Tema Slalom claro · WCAG AA contrast ≥ 4.5:1 throughout
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Root container — fills the slide completely, flex row
+   ───────────────────────────────────────────────────────────────────────── */
+
+.arch-diagram {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #F9FAFB;
+  overflow: hidden;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  outline: none;
+  cursor: default;
+}
+
+.arch-diagram:focus-visible {
+  outline: 3px solid #0C62FB;
+  outline-offset: -3px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Canvas wrapper — takes flex-1 space next to the sidebar.
+   position:relative so the scrim can be stacked on top of the SVG.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.arch-canvas-wrap {
+  flex: 1 1 0%;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #F9FAFB;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Lucid SVG — scales to fill the canvas while preserving aspect ratio.
+   object-fit:contain keeps the full diagram visible.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.arch-lucid-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center center;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Scrim wrapper — absolutely fills the canvas-wrap so the overlay SVG
+   sits exactly on top of the background SVG image.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.arch-scrim-wrap {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  animation: arch-scrim-in 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.arch-scrim-wrap--no-anim {
+  animation: none;
+}
+
+@keyframes arch-scrim-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .arch-scrim-wrap {
+    animation: none;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Scrim SVG — fills the scrim-wrap completely. Same viewBox proportions
+   as the Lucid SVG so the bounding boxes align exactly.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.arch-scrim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* Match the viewBox of the Lucid SVG: 2162.5/1303 ≈ 1.66 aspect ratio */
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Sidebar — large, projection-readable service info panel.
+   ALWAYS rendered (step 0: overview card, step>0: service info).
+
+   Width: clamp(260px, 30%, 420px)
+   Fonts sized for ~3-5m projection distance:
+     title:   22px Poppins 700
+     bullets: 17px Inter 400, leading 1.65
+   All colours: full opacity — WCAG AA.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.arch-sidebar {
+  flex: 0 0 clamp(260px, 30%, 420px);
+  width: clamp(260px, 30%, 420px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px 20px 20px 10px;
+  animation: arch-sidebar-in 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Overview variant: no entrance animation */
+.arch-sidebar--overview {
+  animation: none;
+}
+
+@keyframes arch-sidebar-in {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .arch-sidebar {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.arch-sidebar__inner {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(15, 28, 65, 0.12);
+  border-radius: 16px;
+  padding: 28px 28px 22px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.10), 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+/* Overview inner */
+.arch-sidebar__inner--overview {
+  border-color: rgba(15, 28, 65, 0.08);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+}
+
+.arch-sidebar__title {
+  font-family: "Poppins", "Inter", system-ui, sans-serif;
+  font-size: 22px;
+  font-weight: 700;
+  color: #0F1C41; /* 15.9:1 on white — AA+ */
+  margin: 0 0 18px;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+.arch-sidebar__list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.arch-sidebar__item {
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 17px;
+  font-weight: 400;
+  color: #1a1a2e; /* ~15:1 on white — AA+ */
+  line-height: 1.65;
+  padding-left: 20px;
+  position: relative;
+}
+
+.arch-sidebar__item::before {
+  content: "▸";
+  position: absolute;
+  left: 0;
+  color: #0C62FB; /* 5.05:1 on white — AA */
+  font-size: 14px;
+  line-height: 1.9;
+}
+
+.arch-sidebar__nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid rgba(15, 28, 65, 0.10);
+  padding-top: 14px;
+  margin-top: 4px;
+}
+
+.arch-sidebar__nav--hint {
+  justify-content: center;
+  border-top-color: rgba(15, 28, 65, 0.06);
+}
+
+.arch-sidebar__step {
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0C62FB; /* 5.05:1 on white — AA */
+  letter-spacing: 0.04em;
+}
+
+.arch-sidebar__hint {
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 13px;
+  color: #4B5563; /* 7.23:1 on white — AA+ */
+  letter-spacing: 0.01em;
+}
+
+.arch-sidebar__hint-big {
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  color: #4B5563;
+  letter-spacing: 0.01em;
+}
+
+.arch-sidebar__hint-big kbd {
+  font-family: inherit;
+  background: #F5F5F5;
+  border: 1px solid #D1D5DB;
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Visually-hidden utility (sr-only)
+   ───────────────────────────────────────────────────────────────────────── */
+
+.arch-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+  pointer-events: none;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Slide host — .slide--diagram
+   ───────────────────────────────────────────────────────────────────────── */
+
+.slide--diagram {
+  background: #F9FAFB;
+  padding: 0 !important;
+  gap: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: stretch;
+}
