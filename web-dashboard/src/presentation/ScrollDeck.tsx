@@ -14,12 +14,14 @@
  *
  * Sections:
  *   1. Cover         — full-bleed navy slide, no diagram
- *   2. Platform      — monorepo overview, no diagram
- *   3. Firmware/Edge — Diagram A (highlights ESP32 + IoT areas), MQTT callout
- *   4. Architecture  — Diagram A (all AWS services), SubStepContext
- *   5. Agents        — Diagram B (CrewAI), CrewSubStepContext
- *   6. Self-Healing  — Diagram C (Fargate flow), SelfHealingSubStepContext
- *   7. Closing       — navy slide, honest debt
+ *   2. Client        — healthcare-IoT motivation / why a golden path, no diagram
+ *   3. Agenda        — what we'll cover (talk outline), no diagram
+ *   4. Platform      — monorepo overview, no diagram
+ *   5. Firmware/Edge — Diagram A (highlights ESP32 + IoT areas), MQTT callout
+ *   6. Architecture  — Diagram A (all AWS services), SubStepContext
+ *   7. Agents        — Diagram B (CrewAI), CrewSubStepContext
+ *   8. Self-Healing  — Diagram C (Fargate flow), SelfHealingSubStepContext
+ *   9. Closing       — navy slide, honest debt
  *
  * CSP: SVG imported as Vite asset URLs (img-src 'self'). Zero external fonts.
  * A11y: aria-live polite, aria-current on active step, keyboard navigation.
@@ -59,6 +61,8 @@ import "./ScrollDeck.css";
 
 type SectionId =
   | "cover"
+  | "client"
+  | "agenda"
   | "platform"
   | "firmware"
   | "architecture"
@@ -73,6 +77,8 @@ interface SectionMeta {
 
 const SECTION_META: SectionMeta[] = [
   { id: "cover",        label: "Cover" },
+  { id: "client",       label: "The Problem" },
+  { id: "agenda",       label: "Agenda" },
   { id: "platform",     label: "Platform" },
   { id: "firmware",     label: "Firmware / Edge" },
   { id: "architecture", label: "AWS Architecture" },
@@ -418,7 +424,97 @@ function CoverSection(): React.ReactElement {
   );
 }
 
-// --- 2. Platform ---
+// --- 2. Client / Motivation ---
+
+function ClientSection(): React.ReactElement {
+  return (
+    <ContentSection id="client">
+      <div className="section-content">
+        <div className="section-content__inner">
+          <p className="slide-cover__eyebrow">The Problem</p>
+          <h2 className="slide-h2">Why a golden path?</h2>
+          <p className="slide-body--lead">
+            Regulated healthcare-IoT platforms combine clinical SaaS workloads
+            with medical device telemetry — under HIPAA, SOC 2, and HITRUST.
+          </p>
+          <ul className="section-list">
+            <li>
+              <strong className="slide-strong">Compliance at every layer</strong> — HIPAA, SOC 2,
+              HITRUST controls must be baked in from day one, not retrofitted
+            </li>
+            <li>
+              <strong className="slide-strong">Secure multi-account AWS foundation</strong> — AWS
+              Organizations, IAM boundaries, VPC isolation, KMS encryption, and
+              centralised logging and audit trails
+            </li>
+            <li>
+              <strong className="slide-strong">IaC from the start</strong> — Terraform/CDK
+              pipelines, CI/CD, and security baselines that enable repeatable
+              onboarding and operational readiness
+            </li>
+            <li>
+              <strong className="slide-strong">IoT Core for device connectivity</strong> — secure
+              mutual-TLS device identity, scoped IoT policies, and telemetry
+              ingestion pipelines that meet regulatory traceability requirements
+            </li>
+          </ul>
+          <p className="slide-body--caption section-content__meta">
+            This is the kind of organization that needs a repeatable golden
+            path &mdash; the rest of this talk is a hands-on reference
+            implementation.
+          </p>
+        </div>
+      </div>
+    </ContentSection>
+  );
+}
+
+// --- 3. Agenda ---
+
+function AgendaSection(): React.ReactElement {
+  return (
+    <ContentSection id="agenda">
+      <div className="section-content">
+        <div className="section-content__inner">
+          <p className="slide-cover__eyebrow">What we will cover</p>
+          <h2 className="slide-h2">Agenda</h2>
+          <ol className="section-agenda-list">
+            <li>
+              <strong className="slide-strong">Platform / the golden path</strong> — monorepo
+              scaffold, CDK stacks, and the agent harness that built it
+            </li>
+            <li>
+              <strong className="slide-strong">Edge firmware and MQTT to IoT Core</strong> —
+              ESP32 with ESP-IDF 5.3, mutual-TLS device identity, OTA A/B
+              partition updates
+            </li>
+            <li>
+              <strong className="slide-strong">AWS architecture</strong> — three CDK v2
+              stacks: IoT Core, Self-Healing runner, and Dashboard backend,
+              deployed to a sandbox account
+            </li>
+            <li>
+              <strong className="slide-strong">AI agents (CrewAI + Bedrock)</strong> — a
+              three-agent crew running on Bedrock Claude Sonnet 4.5 that
+              diagnoses failures and opens automated fix PRs
+            </li>
+            <li>
+              <strong className="slide-strong">Self-healing demo (live)</strong> — inject a
+              bug into the sample service, watch CI fail, and see the crew
+              file a fix PR end-to-end
+            </li>
+            <li>
+              <strong className="slide-strong">Wrap-up</strong> — honest debt, takeaways, and
+              Q&amp;A
+            </li>
+          </ol>
+        </div>
+      </div>
+    </ContentSection>
+  );
+}
+
+// --- 4. Platform ---
 
 function PlatformSection(): React.ReactElement {
   return (
@@ -852,13 +948,19 @@ export function ScrollDeck(): React.ReactElement {
         {/* 1. Cover */}
         <CoverSection />
 
-        {/* 2. Platform */}
+        {/* 2. Client — healthcare-IoT motivation / why a golden path */}
+        <ClientSection />
+
+        {/* 3. Agenda — talk outline */}
+        <AgendaSection />
+
+        {/* 4. Platform */}
         <PlatformSection />
 
-        {/* 3. Firmware / Edge — Diagram A highlighting ESP32 + IoT Core */}
+        {/* 5. Firmware / Edge — Diagram A highlighting ESP32 + IoT Core */}
         <FirmwareSection />
 
-        {/* 4. Architecture — Diagram A, all AWS services */}
+        {/* 6. Architecture — Diagram A, all AWS services */}
         <DiagramSection
           id="architecture"
           label="AWS Architecture"
@@ -871,7 +973,7 @@ export function ScrollDeck(): React.ReactElement {
           )}
         />
 
-        {/* 5. AI Agents — Diagram B */}
+        {/* 7. AI Agents — Diagram B */}
         <DiagramSection
           id="agents"
           label="AI Agents — CrewAI"
@@ -884,7 +986,7 @@ export function ScrollDeck(): React.ReactElement {
           )}
         />
 
-        {/* 6. Self-Healing — Diagram C */}
+        {/* 8. Self-Healing — Diagram C */}
         <DiagramSection
           id="self-healing"
           label="Self-Healing Flow"
@@ -897,7 +999,7 @@ export function ScrollDeck(): React.ReactElement {
           )}
         />
 
-        {/* 7. Closing */}
+        {/* 9. Closing */}
         <ClosingSection />
       </div>
     </KeyboardRegistryContext.Provider>

@@ -296,6 +296,46 @@ html:has(.scroll-deck) {
   margin-top: 0.6em;
 }
 
+/* AGENDA — numbered list */
+.section-agenda-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  counter-reset: agenda-counter;
+}
+
+.section-agenda-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  font-size: clamp(1rem, 1.7vw, 1.25rem);
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  counter-increment: agenda-counter;
+}
+
+.section-agenda-list li::before {
+  content: counter(agenda-counter);
+  flex-shrink: 0;
+  min-width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: #ffffff;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  font-family: var(--font-sans);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 0.15em;
+}
+
 /* CLOSING */
 .section-closing {
   flex: 1;

@@ -7,11 +7,13 @@
  *
  * Covers:
  *   (a) ScrollDeck renders without crashing
- *   (b) All 7 section headings are present in the document
+ *   (b) All 9 section headings are present in the document
  *   (c) ArchitectureDiagram is rendered (section-architecture present)
  *   (d) CrewDiagram is rendered (section-agents present)
  *   (e) SelfHealingDiagram is rendered (section-self-healing present)
- *   (f) Nav dots are present with correct count
+ *   (f) Nav dots are present with correct count (9)
+ *   (k) section-client is in the document
+ *   (l) section-agenda is in the document
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -112,10 +114,20 @@ describe("ScrollDeck — smoke tests", () => {
     expect(container.querySelector("#section-closing")).toBeTruthy();
   });
 
-  it("(i) nav dots are present — 7 section dots", () => {
+  it("(k) section-client is in the document", () => {
+    const { container } = renderDeck();
+    expect(container.querySelector("#section-client")).toBeTruthy();
+  });
+
+  it("(l) section-agenda is in the document", () => {
+    const { container } = renderDeck();
+    expect(container.querySelector("#section-agenda")).toBeTruthy();
+  });
+
+  it("(i) nav dots are present — 9 section dots", () => {
     const { container } = renderDeck();
     const dots = container.querySelectorAll(".deck-nav-dot");
-    expect(dots.length).toBe(7);
+    expect(dots.length).toBe(9);
   });
 
   it("(j) keyboard hint is present in a diagram section", () => {
