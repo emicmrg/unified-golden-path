@@ -1083,23 +1083,24 @@ function C1Section({ isVisible }: { isVisible: boolean }): React.ReactElement {
     if (!isVisible) return;
 
     const onKeyDown = (e: KeyboardEvent) => {
-      // Do not intercept typing in form controls or contenteditable
+      // FIX 1: ignore combos with browser-native modifier keys (Cmd, Ctrl, Alt, Shift)
+      // so shortcuts like Ctrl+R, Cmd+ArrowDown, etc. are not swallowed.
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+
+      // FIX 2: do not intercept events on interactive elements — form controls,
+      // contenteditable, buttons (<button role="tab" variant tabs), and links.
+      // Space/Enter must reach those elements so they can be activated normally.
       const tag = (e.target as HTMLElement | null)?.tagName ?? "";
       const editable = (e.target as HTMLElement | null)?.isContentEditable ?? false;
-      if (["INPUT", "TEXTAREA", "SELECT"].includes(tag) || editable) return;
+      if (
+        ["INPUT", "TEXTAREA", "SELECT", "BUTTON", "A"].includes(tag) ||
+        editable
+      )
+        return;
 
-      const last = SH_STEPS.length - 1;
-      let next: number | null = null;
-
-      if (e.key === "ArrowDown" || e.key === "ArrowRight" || e.key === " ") {
-        next = Math.min(targetStepRef.current + 1, last);
-      } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
-        next = Math.max(targetStepRef.current - 1, 0);
-      } else if (e.key === "Home") {
-        next = 0;
-      } else if (e.key === "End") {
-        next = last;
-      }
+      // FIX 3: delegate to the pure function tested by the 22 unit tests instead
+      // of duplicating the navigation logic inline.
+      const next = navigateStep(targetStepRef.current, e.key, SH_STEPS.length);
 
       if (next !== null) {
         e.preventDefault(); // only when actually navigating a step
