@@ -4,7 +4,7 @@
  * can import them without pulling the 108 KB SVG ?raw import into the bundle.
  *
  * These functions have no DOM or React dependencies — they are pure functions
- * that can be tested independently (see scroll-proto.test.ts).
+ * that can be tested independently (see scroll-step.test.ts).
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -74,4 +74,59 @@ export function navigateStep(
   if (key === "Home") return 0;
   if (key === "End") return last;
   return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// selectSection
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * selectSection — deterministic active-section detection by viewport-center
+ * containment.
+ *
+ * PRIMARY RULE: the active section is the one whose bounding rect CONTAINS
+ * the viewport center (rect.top <= mid < rect.bottom, where mid = viewportHeight/2).
+ * Because sections are laid out contiguously with no gaps, exactly one section
+ * always contains the center.  This is height-independent and always produces
+ * the correct result regardless of the disparate heights of diagram sections
+ * (e.g. architecture 8 steps × 95 vh vs agents 6 steps × 95 vh).
+ *
+ * FALLBACK: if no section contains the center (edge of scroll range where the
+ * page is not yet fully scrolled), fall back to the section whose center is
+ * closest to the viewport center — identical to the old closest-center
+ * heuristic but only used as a last resort.
+ *
+ * @param rects         Array of {top, bottom} bounding-rect values (px,
+ *                      viewport-relative — as returned by getBoundingClientRect).
+ * @param viewportHeight  Current window.innerHeight (px).
+ * @returns             Index of the active section (0-based).
+ */
+export function selectSection(
+  rects: { top: number; bottom: number }[],
+  viewportHeight: number,
+): number {
+  if (rects.length === 0) return 0;
+
+  const mid = viewportHeight / 2;
+
+  // Primary: containment — O(n), always correct for contiguous sections.
+  for (let i = 0; i < rects.length; i++) {
+    const { top, bottom } = rects[i];
+    if (top <= mid && mid < bottom) {
+      return i;
+    }
+  }
+
+  // Fallback: closest center (edge of scroll range, no section contains mid).
+  let bestIdx = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < rects.length; i++) {
+    const center = (rects[i].top + rects[i].bottom) / 2;
+    const dist = Math.abs(center - mid);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
 }

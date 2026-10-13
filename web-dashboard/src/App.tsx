@@ -45,7 +45,7 @@ function LegacyRedirect(): null {
 
 export function App(): React.ReactElement {
   return (
-    <BrowserRouter>
+    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <LegacyRedirect />
       <Routes>
         {/* Primary route: scrollytelling deck */}

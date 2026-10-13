@@ -4,13 +4,13 @@
  * ARCHITECTURE — MODEL A / C1 variant, generalized from ScrollProto.
  *
  * Document scrolls; diagram column is position:sticky within each section.
- * IntersectionObserver (root=viewport) detects which step is centered.
- * Hysteresis deadband 40 px prevents oscillation between adjacent steps.
+ * Active step: rAF-throttled scroll listener + selectStep (center-distance +
+ * hysteresis deadband 40 px) prevents oscillation between adjacent steps.
  * Keyboard: window keydown, gated by section visibility, deterministic
  * targetStepRef pattern with scrollend resync (same as ScrollProto).
- * Active section: rAF-throttled closest-to-center detection (not threshold
- * IntersectionObserver) so diagram sections — whose sticky column prevents the
- * section element from ever reaching 35 % intersection — are always detected.
+ * Active section: rAF-throttled scroll listener + selectSection (viewport-center
+ * containment — rect.top <= mid < rect.bottom) so detection is deterministic and
+ * height-independent across sections of disparate heights.
  *
  * Sections:
  *   1. Cover         — full-bleed navy slide, no diagram
@@ -48,7 +48,7 @@ import {
   SelfHealingSubStepContext,
   SH_STEPS,
 } from "./SelfHealingDiagram.js";
-import { selectStep, navigateStep } from "./scrollStep.js";
+import { selectStep, navigateStep, selectSection } from "./scrollStep.js";
 
 import "./ScrollDeck.css";
 
@@ -135,8 +135,9 @@ export function useC1ActiveStep(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Hook: useSectionVisible (IntersectionObserver, 5% threshold)
-// Only used to gate scroll-step computation; keyboard ownership is NOT gated
-// by this — it is gated by activeSection (threshold 0.35) in ScrollDeck.
+// Only used to gate scroll-step computation per DiagramSection; keyboard
+// ownership is gated by activeSection (viewport-center containment via
+// selectSection) in ScrollDeck, not by this observer.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function useSectionVisible(sectionRef: React.RefObject<HTMLElement | null>): boolean {
@@ -740,34 +741,33 @@ export function ScrollDeck(): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // intentional — keyHandlersRef and activeSectionRef are stable refs
 
-  // Track which section is most visible — robust closest-to-center detection.
+  // Track which section is most visible — deterministic viewport-center
+  // containment detection.
   //
-  // RATIONALE: An IntersectionObserver with threshold 0.35 never fires for
-  // diagram sections (the sticky diagram column occupies the viewport, so the
-  // section's own scroll height never reaches 35 % intersection ratio).
-  // Instead we use a rAF-throttled scroll listener that picks the section
-  // whose vertical centre is closest to the viewport centre.  This is the
-  // same approach used by useC1ActiveStep for sub-steps and ALWAYS yields a
-  // valid activeSection regardless of section height.
+  // RATIONALE: The old closest-center heuristic was sensitive to section
+  // heights: with diagram sections of disparate heights (architecture 8 steps,
+  // agents 6, self-healing 8; each step ~95 vh), the cross-over point was at
+  // the midpoint between the two section *centers*, not at the section
+  // boundary, causing a ~17 % deviation and occasional backward keyboard jumps.
+  //
+  // FIX: selectSection picks the section whose bounding rect CONTAINS the
+  // viewport center (rect.top <= mid < rect.bottom).  Sections are contiguous
+  // with no gaps, so exactly one section always satisfies the condition —
+  // making detection O(n), deterministic, and height-independent.
+  // Closest-center is kept only as a fallback for extreme scroll edges.
   useEffect(() => {
     let rafId: number | null = null;
 
     const computeActiveSection = () => {
-      const mid = window.innerHeight / 2;
-      let bestId: SectionId = "cover";
-      let bestDist = Infinity;
-      SECTION_META.forEach(({ id }) => {
+      const viewportHeight = window.innerHeight;
+      const rects = SECTION_META.map(({ id }) => {
         const el = document.getElementById(`section-${id}`);
-        if (!el) return;
-        const rect = el.getBoundingClientRect();
-        const center = rect.top + rect.height / 2;
-        const dist = Math.abs(center - mid);
-        if (dist < bestDist) {
-          bestDist = dist;
-          bestId = id;
-        }
+        if (!el) return { top: -Infinity, bottom: -Infinity };
+        const r = el.getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom };
       });
-      setActiveSection(bestId);
+      const idx = selectSection(rects, viewportHeight);
+      setActiveSection(SECTION_META[idx]!.id);
     };
 
     const onScroll = () => {
