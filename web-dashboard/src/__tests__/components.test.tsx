@@ -120,6 +120,54 @@ describe("FleetHealth", () => {
     const sparklines = screen.getAllByRole("img");
     expect(sparklines.some((el) => el.getAttribute("aria-label")?.includes("2 points"))).toBe(true);
   });
+
+  // B1: metric-card__status must contain no emoji — color comes from CSS class
+  it("B1: metric-card__status shows plain text label without emoji (OK reading)", () => {
+    vi.mocked(useTelemetry).mockReturnValueOnce({
+      connectionStatus: "connected",
+      latest: {
+        deviceId: "ugp-gateway-01",
+        temperatureCelsius: 5.0,
+        humidityPercent: 45,
+        timestamp: "2026-10-06T14:00:00.000Z",
+      },
+      history: [],
+      error: null,
+    });
+    const { container } = render(<FleetHealth />);
+    const statusEls = container.querySelectorAll(".metric-card__status");
+    expect(statusEls.length).toBeGreaterThan(0);
+    statusEls.forEach((el) => {
+      // No emoji characters in the status label
+      expect(el.textContent).not.toMatch(/[\u{1F300}-\u{1FAFF}]/u);
+      expect(el.textContent).not.toMatch(/[✅⚠️🚨]/u);
+    });
+  });
+
+  it("B1: metric-card__status shows plain text label without emoji (ALARM reading)", () => {
+    vi.mocked(useTelemetry).mockReturnValueOnce({
+      connectionStatus: "connected",
+      latest: {
+        deviceId: "ugp-gateway-01",
+        temperatureCelsius: 15.0, // above TEMP_WARN_HIGH (10°C) → ALARM
+        humidityPercent: 45,
+        timestamp: "2026-10-06T14:00:00.000Z",
+      },
+      history: [],
+      error: null,
+    });
+    const { container } = render(<FleetHealth />);
+    const statusEls = container.querySelectorAll(".metric-card__status");
+    expect(statusEls.length).toBeGreaterThan(0);
+    statusEls.forEach((el) => {
+      expect(el.textContent).not.toMatch(/[\u{1F300}-\u{1FAFF}]/u);
+      expect(el.textContent).not.toMatch(/[✅⚠️🚨]/u);
+      // Temperature card should show "ALARM"
+    });
+    // At least one card shows "ALARM" plain text
+    const texts = Array.from(statusEls).map((el) => el.textContent ?? "");
+    expect(texts.some((t) => t.includes("ALARM"))).toBe(true);
+  });
 });
 
 describe("GoldenPath", () => {

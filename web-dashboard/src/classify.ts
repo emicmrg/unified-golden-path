@@ -67,14 +67,14 @@ export function statusColorClass(status: ReadingStatus): string {
   }
 }
 
-/** Status label */
+/** Status label — plain text, no emoji; color is provided by statusColorClass → CSS */
 export function statusLabel(status: ReadingStatus): string {
   switch (status) {
     case "OK":
-      return "✅ OK";
+      return "OK";
     case "WARN":
-      return "⚠️ WARNING";
+      return "WARNING";
     case "ALARM":
-      return "🚨 ALARM";
+      return "ALARM";
   }
 }

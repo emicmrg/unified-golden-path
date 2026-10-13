@@ -132,6 +132,8 @@ export function useC1ActiveStep(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Hook: useSectionVisible (IntersectionObserver, 5% threshold)
+// Only used to gate scroll-step computation; keyboard ownership is NOT gated
+// by this — it is gated by activeSection (threshold 0.35) in ScrollDeck.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function useSectionVisible(sectionRef: React.RefObject<HTMLElement | null>): boolean {
@@ -150,18 +152,35 @@ function useSectionVisible(sectionRef: React.RefObject<HTMLElement | null>): boo
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Hook: useKeyboardNav (window keydown, gated by isVisible)
+// KeyboardRegistry — single window keydown owner pattern.
+//
+// Each diagram section registers a handler; ScrollDeck dispatches to exactly
+// one section (the activeSection at 0.35 threshold) so two adjacent sections
+// can never both handle the same keystroke.
 // ─────────────────────────────────────────────────────────────────────────────
 
+type KeyHandler = (e: KeyboardEvent) => void;
+
+interface KeyboardRegistryValue {
+  register: (id: SectionId, handler: KeyHandler) => void;
+  unregister: (id: SectionId) => void;
+}
+
+const KeyboardRegistryContext = React.createContext<KeyboardRegistryValue>({
+  register: () => undefined,
+  unregister: () => undefined,
+});
+
+// Hook for diagram sections: registers their key handler into the registry.
 function useKeyboardNav(
-  isVisible: boolean,
+  id: SectionId,
   targetStepRef: React.MutableRefObject<number>,
   stepCount: number,
   scrollToStep: (idx: number) => void,
 ): void {
+  const { register, unregister } = React.useContext(KeyboardRegistryContext);
   useEffect(() => {
-    if (!isVisible) return;
-    const onKeyDown = (e: KeyboardEvent) => {
+    const handler: KeyHandler = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
       const tag = (e.target as HTMLElement | null)?.tagName ?? "";
       const editable = (e.target as HTMLElement | null)?.isContentEditable ?? false;
@@ -173,9 +192,9 @@ function useKeyboardNav(
         scrollToStep(next);
       }
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isVisible, targetStepRef, stepCount, scrollToStep]);
+    register(id, handler);
+    return () => unregister(id);
+  }, [id, register, unregister, targetStepRef, stepCount, scrollToStep]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -269,7 +288,7 @@ function DiagramSection({
     [prefersReducedMotion],
   );
 
-  useKeyboardNav(isVisible, targetStepRef, stepCount, scrollToStep);
+  useKeyboardNav(id, targetStepRef, stepCount, scrollToStep);
 
   const story = (
     <div
@@ -544,7 +563,7 @@ function FirmwareSection(): React.ReactElement {
     [prefersReducedMotion],
   );
 
-  useKeyboardNav(isVisible, targetStepRef, stepCount, scrollToStep);
+  useKeyboardNav("firmware", targetStepRef, stepCount, scrollToStep);
 
   return (
     <section
@@ -686,6 +705,37 @@ function NavDots({
 export function ScrollDeck(): React.ReactElement {
   const [activeSection, setActiveSection] = useState<SectionId>("cover");
 
+  // ── Keyboard registry — single owner pattern ────────────────────────────
+  // Diagram sections register their handler; ScrollDeck dispatches to exactly
+  // the one section that is currently dominant (activeSection at 0.35 threshold).
+  // This eliminates the race where two adjacent sections both handle the same
+  // ArrowDown/Space keystroke during a cross-section transition.
+  const keyHandlersRef = useRef<Map<SectionId, KeyHandler>>(new Map());
+
+  const register = useCallback((id: SectionId, handler: KeyHandler) => {
+    keyHandlersRef.current.set(id, handler);
+  }, []);
+
+  const unregister = useCallback((id: SectionId) => {
+    keyHandlersRef.current.delete(id);
+  }, []);
+
+  // activeSectionRef mirrors the state without causing re-closures in the
+  // keydown handler (stable reference through the lifetime of ScrollDeck).
+  const activeSectionRef = useRef<SectionId>(activeSection);
+  useEffect(() => { activeSectionRef.current = activeSection; }, [activeSection]);
+
+  // Single global keydown listener — dispatches to the active section only.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const handler = keyHandlersRef.current.get(activeSectionRef.current);
+      if (handler) handler(e);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentional — keyHandlersRef and activeSectionRef are stable refs
+
   // Track which section is most visible
   useEffect(() => {
     const observers: IntersectionObserver[] = [];
@@ -713,59 +763,61 @@ export function ScrollDeck(): React.ReactElement {
   }, []);
 
   return (
-    <div className="scroll-deck" data-testid="scroll-deck">
-      <NavDots activeId={activeSection} onNavigate={navigateTo} />
+    <KeyboardRegistryContext.Provider value={{ register, unregister }}>
+      <div className="scroll-deck" data-testid="scroll-deck">
+        <NavDots activeId={activeSection} onNavigate={navigateTo} />
 
-      {/* 1. Cover */}
-      <CoverSection />
+        {/* 1. Cover */}
+        <CoverSection />
 
-      {/* 2. Platform */}
-      <PlatformSection />
+        {/* 2. Platform */}
+        <PlatformSection />
 
-      {/* 3. Firmware / Edge — Diagram A highlighting ESP32 + IoT Core */}
-      <FirmwareSection />
+        {/* 3. Firmware / Edge — Diagram A highlighting ESP32 + IoT Core */}
+        <FirmwareSection />
 
-      {/* 4. Architecture — Diagram A, all AWS services */}
-      <DiagramSection
-        id="architecture"
-        label="AWS Architecture"
-        steps={ARCH_STEPS}
-        renderDiagram={() => <ArchitectureDiagram />}
-        contextWrapper={({ activeStep, isActive, children }) => (
-          <SubStepContext.Provider value={{ subStep: activeStep, isActive }}>
-            {children}
-          </SubStepContext.Provider>
-        )}
-      />
+        {/* 4. Architecture — Diagram A, all AWS services */}
+        <DiagramSection
+          id="architecture"
+          label="AWS Architecture"
+          steps={ARCH_STEPS}
+          renderDiagram={() => <ArchitectureDiagram />}
+          contextWrapper={({ activeStep, isActive, children }) => (
+            <SubStepContext.Provider value={{ subStep: activeStep, isActive }}>
+              {children}
+            </SubStepContext.Provider>
+          )}
+        />
 
-      {/* 5. AI Agents — Diagram B */}
-      <DiagramSection
-        id="agents"
-        label="AI Agents — CrewAI"
-        steps={CREW_STEPS}
-        renderDiagram={() => <CrewDiagram />}
-        contextWrapper={({ activeStep, isActive, children }) => (
-          <CrewSubStepContext.Provider value={{ subStep: activeStep, isActive }}>
-            {children}
-          </CrewSubStepContext.Provider>
-        )}
-      />
+        {/* 5. AI Agents — Diagram B */}
+        <DiagramSection
+          id="agents"
+          label="AI Agents — CrewAI"
+          steps={CREW_STEPS}
+          renderDiagram={() => <CrewDiagram />}
+          contextWrapper={({ activeStep, isActive, children }) => (
+            <CrewSubStepContext.Provider value={{ subStep: activeStep, isActive }}>
+              {children}
+            </CrewSubStepContext.Provider>
+          )}
+        />
 
-      {/* 6. Self-Healing — Diagram C */}
-      <DiagramSection
-        id="self-healing"
-        label="Self-Healing Flow"
-        steps={SH_STEPS}
-        renderDiagram={() => <SelfHealingDiagram />}
-        contextWrapper={({ activeStep, isActive, children }) => (
-          <SelfHealingSubStepContext.Provider value={{ subStep: activeStep, isActive }}>
-            {children}
-          </SelfHealingSubStepContext.Provider>
-        )}
-      />
+        {/* 6. Self-Healing — Diagram C */}
+        <DiagramSection
+          id="self-healing"
+          label="Self-Healing Flow"
+          steps={SH_STEPS}
+          renderDiagram={() => <SelfHealingDiagram />}
+          contextWrapper={({ activeStep, isActive, children }) => (
+            <SelfHealingSubStepContext.Provider value={{ subStep: activeStep, isActive }}>
+              {children}
+            </SelfHealingSubStepContext.Provider>
+          )}
+        />
 
-      {/* 7. Closing */}
-      <ClosingSection />
-    </div>
+        {/* 7. Closing */}
+        <ClosingSection />
+      </div>
+    </KeyboardRegistryContext.Provider>
   );
 }
