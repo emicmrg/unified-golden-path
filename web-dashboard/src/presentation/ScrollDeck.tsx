@@ -625,7 +625,7 @@ function FirmwareSection(): React.ReactElement {
 
           {/* Sticky diagram — Diagram A highlighting edge/IoT areas */}
           <div className="deck-diagram-pin" aria-hidden="true">
-            <ArchitectureDiagram />
+            <ArchitectureDiagram showSidebar={false} />
             <p className="deck-keyboard-hint" aria-hidden="true">
               Arrow keys · Space · Home · End to navigate
             </p>
@@ -819,7 +819,7 @@ export function ScrollDeck(): React.ReactElement {
           id="architecture"
           label="AWS Architecture"
           steps={ARCH_STEPS}
-          renderDiagram={() => <ArchitectureDiagram />}
+          renderDiagram={() => <ArchitectureDiagram showSidebar={false} />}
           contextWrapper={({ activeStep, isActive, children }) => (
             <SubStepContext.Provider value={{ subStep: activeStep, isActive }}>
               {children}
@@ -832,7 +832,7 @@ export function ScrollDeck(): React.ReactElement {
           id="agents"
           label="AI Agents — CrewAI"
           steps={CREW_STEPS}
-          renderDiagram={() => <CrewDiagram />}
+          renderDiagram={() => <CrewDiagram showSidebar={false} />}
           contextWrapper={({ activeStep, isActive, children }) => (
             <CrewSubStepContext.Provider value={{ subStep: activeStep, isActive }}>
               {children}
@@ -845,7 +845,7 @@ export function ScrollDeck(): React.ReactElement {
           id="self-healing"
           label="Self-Healing Flow"
           steps={SH_STEPS}
-          renderDiagram={() => <SelfHealingDiagram />}
+          renderDiagram={() => <SelfHealingDiagram showSidebar={false} />}
           contextWrapper={({ activeStep, isActive, children }) => (
             <SelfHealingSubStepContext.Provider value={{ subStep: activeStep, isActive }}>
               {children}

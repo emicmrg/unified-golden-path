@@ -372,10 +372,20 @@ function ScrimOverlay({ bbox, extraBBoxes = [], reducedMotion }: ScrimOverlayPro
 // Layout:
 //   .arch-diagram (flex row):
 //     .arch-canvas-wrap (flex-1): contains the Lucid SVG background + scrim
-//     .arch-sidebar (~30%): service info panel
+//     .arch-sidebar (~30%): service info panel (hidden when showSidebar=false)
+//
+// Props:
+//   showSidebar — controls whether the internal sidebar panel is rendered.
+//     Default: true (standalone use). Pass false when embedding inside
+//     ScrollDeck, where the left-column narrative already shows step content.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function ArchitectureDiagram(): React.ReactElement {
+interface ArchitectureDiagramProps {
+  /** Show the internal sidebar step panel. Default true. */
+  showSidebar?: boolean;
+}
+
+export function ArchitectureDiagram({ showSidebar = true }: ArchitectureDiagramProps): React.ReactElement {
   const { subStep: step, isActive } = useContext(SubStepContext);
   const reducedMotion = usePrefersReducedMotion();
 
@@ -441,7 +451,7 @@ export function ArchitectureDiagram(): React.ReactElement {
       </div>
 
       {/* ── Sidebar ──────────────────────────────────────────────────── */}
-      {isFirstOverview ? (
+      {showSidebar && (isFirstOverview ? (
         <aside
           className="arch-sidebar arch-sidebar--overview"
           aria-label="Diagram overview"
@@ -485,7 +495,7 @@ export function ArchitectureDiagram(): React.ReactElement {
             </div>
           </div>
         </aside>
-      )}
+      ))}
     </div>
   );
 }
