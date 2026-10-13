@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { selectStep, navigateStep } from "../proto/ScrollProto.js";
+import { selectStep, navigateStep } from "../presentation/scrollStep.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
