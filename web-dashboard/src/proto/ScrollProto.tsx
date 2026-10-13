@@ -33,10 +33,15 @@
  *   @media (max-width: 48rem) is placed AFTER base rules. Diagram goes sticky
  *   at the top, text flows beneath it in a single column. No nested scroll.
  *
- * KEYBOARD (B3 FIXED):
- *   targetStepRef advances independently of activeStep (which lags behind scroll
- *   observer). ArrowDown/Up/Space clamp(target ± 1), then scrollIntoView.
- *   targetStepRef re-syncs with observed activeStep only when scroll settles.
+ * KEYBOARD (B3 FIXED → deterministic, no-click required):
+ *   window keydown listener gated by isVisible (C1 section in viewport).
+ *   No click required — works on first keypress after section enters view.
+ *   Ignores events in INPUT/TEXTAREA/SELECT/[contenteditable].
+ *   targetStepRef advances immediately on each press (deterministic, auto-repeat safe).
+ *   activeStepRef mirrors the observed activeStep (updated in a deps:[activeStep] effect).
+ *   Settle resync: window 'scrollend' event + 150 ms debounce fallback, registered ONCE
+ *   (deps:[]) so cleanup never cancels a pending debounce on step commit.
+ *   ArrowDown/Up/Space clamp(target ± 1), Home, End; scrollIntoView on change.
  *
  * HALO CROSS-FADE (B4 FIXED):
  *   Position transitions REMOVED from .proto-soft-halo-glow. Incoming buffer is
@@ -856,6 +861,71 @@ function VariantC3InlineSvg({
 
 const C1_HYSTERESIS_PX = 40;
 
+// ── Pure helpers — exported for unit testing ─────────────────────────────────
+
+/**
+ * selectStep — pure step-selection with hysteresis deadband.
+ *
+ * Given the distance of each step from the viewport center and the previously
+ * committed step, returns the new committed step index.
+ *
+ * Only switches to a new winner when it beats the previous winner by more than
+ * DEADBAND pixels — prevents oscillation when two steps are equidistant.
+ *
+ * @param distances   Array of |elCenter − viewportCenter| per step (length = stepCount)
+ * @param committed   Previously committed step index
+ * @param deadband    Hysteresis in pixels (default C1_HYSTERESIS_PX)
+ */
+export function selectStep(
+  distances: number[],
+  committed: number,
+  deadband: number = C1_HYSTERESIS_PX,
+): number {
+  if (distances.length === 0) return committed;
+
+  let bestIdx = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < distances.length; i++) {
+    if (distances[i] < bestDist) {
+      bestDist = distances[i];
+      bestIdx = i;
+    }
+  }
+
+  if (bestIdx === committed) return committed;
+
+  const prevDist = distances[committed] ?? Infinity;
+  if (bestDist < prevDist - deadband) {
+    return bestIdx;
+  }
+  return committed;
+}
+
+/**
+ * navigateStep — pure keyboard step navigation.
+ *
+ * Given the current targetStep, a key string, and the total number of steps,
+ * returns the next target step (or null when the key is not handled).
+ */
+export function navigateStep(
+  current: number,
+  key: string,
+  stepCount: number,
+): number | null {
+  const last = stepCount - 1;
+  if (key === "ArrowDown" || key === "ArrowRight" || key === " ") {
+    return Math.min(current + 1, last);
+  }
+  if (key === "ArrowUp" || key === "ArrowLeft") {
+    return Math.max(current - 1, 0);
+  }
+  if (key === "Home") return 0;
+  if (key === "End") return last;
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 function useC1ActiveStep(
   stepRefs: React.RefObject<(HTMLElement | null)[]>,
   stepCount: number,
@@ -872,37 +942,24 @@ function useC1ActiveStep(
     // Viewport center — MODEL A uses window/viewport as scroll root
     const viewportCenter = window.innerHeight / 2;
 
-    let bestIdx = 0;
-    let bestDist = Infinity;
-
+    // Build distance array for each step (|elCenter − viewportCenter|)
+    const distances: number[] = [];
     for (let i = 0; i < stepCount; i++) {
       const el = steps[i];
-      if (!el) continue;
+      if (!el) {
+        distances.push(Infinity);
+        continue;
+      }
       const rect = el.getBoundingClientRect();
       const elCenter = rect.top + rect.height / 2;
-      const dist = Math.abs(elCenter - viewportCenter);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestIdx = i;
-      }
+      distances.push(Math.abs(elCenter - viewportCenter));
     }
 
-    // Hysteresis: only switch if new winner beats current by DEADBAND px
-    const prevIdx = committedRef.current;
-    if (bestIdx !== prevIdx) {
-      const prevEl = steps[prevIdx];
-      if (prevEl) {
-        const prevRect = prevEl.getBoundingClientRect();
-        const prevCenter = prevRect.top + prevRect.height / 2;
-        const prevDist = Math.abs(prevCenter - viewportCenter);
-        if (bestDist < prevDist - C1_HYSTERESIS_PX) {
-          committedRef.current = bestIdx;
-          setActiveStep(bestIdx);
-        }
-      } else {
-        committedRef.current = bestIdx;
-        setActiveStep(bestIdx);
-      }
+    // Delegate to pure selectStep (hysteresis deadband, testable)
+    const next = selectStep(distances, committedRef.current);
+    if (next !== committedRef.current) {
+      committedRef.current = next;
+      setActiveStep(next);
     }
   }, [stepRefs, stepCount]);
 
@@ -943,9 +1000,12 @@ function useC1ActiveStep(
 //   • scroll-snap: scroll-snap-type: y proximity on the section wrapper,
 //     scroll-snap-align: start on each step block. PROXIMITY avoids trapping.
 //   • IntersectionObserver / step detection: viewport root (null), NOT a nested div.
-//   • B3 FIX: targetStepRef advances independently. Keyboard handler uses
-//     targetStepRef (not activeStep) so rapid keypresses don't lose pulsations.
-//     targetStepRef re-syncs with observed activeStep only after scroll settles.
+//   • B3 FIX (deterministic keyboard nav):
+//     activeStepRef mirrors observed activeStep (deps:[activeStep] effect, always current).
+//     targetStepRef advanced immediately in the keyboard handler — no stale values.
+//     Settle resync (deps:[]) listens to 'scrollend' + 150 ms debounce; cleanup never
+//     cancels a pending debounce because the effect is registered once, not per-step.
+//     Keyboard handler registered on window (gated by isVisible) — no click required.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function C1Section({ isVisible }: { isVisible: boolean }): React.ReactElement {
@@ -958,28 +1018,38 @@ function C1Section({ isVisible }: { isVisible: boolean }): React.ReactElement {
   // MODEL A: no scrollContainerRef — hook listens on window
   const activeStep = useC1ActiveStep(stepRefs, SH_STEPS.length, isVisible);
 
-  // B3 FIX: targetStepRef advances independently of activeStep.
-  // Keyboard handler updates this ref directly; it is NOT derived from activeStep.
-  // Re-sync with observed activeStep only when scroll settles (scrollend event or
-  // a small debounce on scroll).
-  const targetStepRef = useRef<number>(0);
+  // BUG 1 FIX: activeStepRef mirrors the observed activeStep so the settle handler
+  // can read it without capturing a stale closure value.
+  const activeStepRef = useRef<number>(activeStep);
+  useEffect(() => {
+    activeStepRef.current = activeStep;
+  }, [activeStep]);
 
-  // Sync targetStepRef when scroll settles (idle after scroll stops)
+  // targetStepRef: keyboard handler advances this ref directly so rapid key
+  // presses are deterministic and never lose or invert a press.
+  // Re-sync ONLY when scroll settles — registered ONCE (deps []) so the cleanup
+  // never cancels the pending debounce on each activeStep commit.
+  const targetStepRef = useRef<number>(0);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    const onScroll = () => {
-      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-      syncTimerRef.current = setTimeout(() => {
-        // Scroll has settled — re-sync target with observed step
-        targetStepRef.current = activeStep;
-      }, 150);
+    const resync = () => {
+      // Read latest observed step via ref — no stale closure
+      targetStepRef.current = activeStepRef.current;
     };
-    window.addEventListener("scroll", onScroll, { passive: true });
+    const onScrollSettle = () => {
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+      // Fallback debounce: 150 ms of scroll silence
+      syncTimerRef.current = setTimeout(resync, 150);
+    };
+    window.addEventListener("scrollend", resync, { passive: true });
+    window.addEventListener("scroll", onScrollSettle, { passive: true });
     return () => {
-      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("scrollend", resync);
+      window.removeEventListener("scroll", onScrollSettle);
       if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     };
-  }, [activeStep]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // deps [] — register once; cleanup never cancels the pending debounce
 
   // Announce step change — announce step NAME, not "Paso N" (accessibility)
   useEffect(() => {
@@ -1007,34 +1077,42 @@ function C1Section({ isVisible }: { isVisible: boolean }): React.ReactElement {
     [prefersReducedMotion],
   );
 
-  // B3 FIX: handleKeyDown uses targetStepRef (not activeStep).
-  // target = clamp(targetStepRef.current ± 1), scrollIntoView, update ref.
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLDivElement>) => {
+  // BUG 2 FIX: register keydown on window, gated by isVisible (C1 section in
+  // viewport). No click required. Ignore events whose target is a text input.
+  useEffect(() => {
+    if (!isVisible) return;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Do not intercept typing in form controls or contenteditable
+      const tag = (e.target as HTMLElement | null)?.tagName ?? "";
+      const editable = (e.target as HTMLElement | null)?.isContentEditable ?? false;
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(tag) || editable) return;
+
       const last = SH_STEPS.length - 1;
       let next: number | null = null;
 
       if (e.key === "ArrowDown" || e.key === "ArrowRight" || e.key === " ") {
-        e.preventDefault();
         next = Math.min(targetStepRef.current + 1, last);
       } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
-        e.preventDefault();
         next = Math.max(targetStepRef.current - 1, 0);
       } else if (e.key === "Home") {
-        e.preventDefault();
         next = 0;
       } else if (e.key === "End") {
-        e.preventDefault();
         next = last;
       }
 
       if (next !== null) {
-        targetStepRef.current = next; // advance ref immediately — deterministic
+        e.preventDefault(); // only when actually navigating a step
+        targetStepRef.current = next; // advance immediately — deterministic
         scrollToStep(next);
       }
-    },
-    [scrollToStep],
-  );
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [isVisible, scrollToStep]);
 
   const currentStep = SH_STEPS[activeStep] ?? SH_STEPS[0];
 
@@ -1067,7 +1145,7 @@ function C1Section({ isVisible }: { isVisible: boolean }): React.ReactElement {
         - proto-story--model-a: CSS grid with sticky diagram column
         - proto-steps--model-a: plain document flow, NO overflow:scroll
         - Each step block is ~95vh tall for generous scroll travel
-        - keyboard handler on the wrapper div (tabIndex={0})
+        - keyboard handler registered on window (gated by isVisible) — no click required
       */}
       <SelfHealingSubStepContext.Provider
         value={{ subStep: activeStep, isActive: isVisible }}
@@ -1077,7 +1155,6 @@ function C1Section({ isVisible }: { isVisible: boolean }): React.ReactElement {
           role="region"
           aria-label="Self-Healing steps — use Arrow keys, Space, Home, End to navigate"
           tabIndex={0}
-          onKeyDown={handleKeyDown}
         >
           {/* ── Text column: plain document flow (MODEL A) ── */}
           <div className="proto-steps proto-steps--model-a">

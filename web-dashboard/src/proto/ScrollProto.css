@@ -269,6 +269,10 @@
   align-content: center;
   padding-block: 3rem;
 
+  /* Offset snap target so the sticky header (≈3.5rem) does not overlap the step
+     title when navigating by keyboard or scroll-snap. */
+  scroll-margin-top: calc(3.5rem + 2vh);
+
   /* Scroll-snap: each step aligns to start of viewport */
   scroll-snap-align: start;
   scroll-snap-stop: normal; /* allow fast scroll to skip steps */
@@ -717,6 +721,10 @@
     opacity: 1 !important;
     transform: none !important;
     transition: none !important;
+    /* With sticky disabled the diagram flows inline — no tall empty gaps needed.
+       Natural content height (plus comfortable padding) is sufficient. */
+    min-height: auto;
+    padding-block: 2rem;
   }
 
   /* Remove scroll-snap from section and step blocks */
