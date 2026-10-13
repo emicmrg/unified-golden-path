@@ -644,31 +644,21 @@ function ClosingSection(): React.ReactElement {
     <ContentSection id="closing">
       <div className="section-closing">
         <div className="section-closing__bars" aria-hidden="true" />
-        <p className="slide-closing__eyebrow">What We Built</p>
-        <h2 className="slide-h2 section-closing__title">What&apos;s Next?</h2>
-        <ul className="section-list section-list--closing">
-          <li>
-            <strong className="slide-strong">Edge mTLS validated on hardware</strong> —
-            ESP32 connects to IoT Core with X.509 mutual-auth, port 8883
-          </li>
-          <li>
-            <strong className="slide-strong">3 CDK stacks deployed and healthy</strong> —
-            UgpIotStack, SelfHealingStack, DashboardStack in the sandbox account
-          </li>
-          <li>
-            <strong className="slide-strong">3-agent crew on Bedrock</strong> —
-            Claude Sonnet 4.5 diagnosed a real bug and opened a fix/* PR end-to-end
-          </li>
-          <li>
-            <strong className="slide-strong">main branch-protected</strong> —
-            required CI checks, enforce_admins, dismiss stale reviews active
-          </li>
-        </ul>
-        <p className="slide-body--caption section-closing__debt">
-          <strong>Honest debt:</strong> DHT11 real sensor driver and secure boot are deferred.
-          Code signing is OFF &mdash; integrity guaranteed by TLS 1.2 + SHA-256 OTA digest,
-          not by code-signing authenticity.
+        <p className="slide-closing__eyebrow">Unified Golden Path</p>
+        <h2 className="slide-h2 section-closing__title">Thanks!</h2>
+        <p className="slide-body--lead section-closing__subtitle">
+          ESP32 to Bedrock — from edge firmware to a self-healing AI crew,
+          all under one golden path.
         </p>
+        <a
+          href="https://github.com/emicmrg/unified-golden-path"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="View the Unified Golden Path source code on GitHub (opens in new tab)"
+          className="section-closing__repo-link"
+        >
+          github.com/emicmrg/unified-golden-path
+        </a>
       </div>
     </ContentSection>
   );

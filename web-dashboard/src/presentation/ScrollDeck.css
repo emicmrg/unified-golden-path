@@ -454,6 +454,46 @@ html:has(.scroll-deck) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
+   CLOSING SECTION — repo link + subtitle
+   ───────────────────────────────────────────────────────────────────────── */
+
+.section-closing__subtitle {
+  color: rgba(182, 208, 254, 0.85);
+  max-width: 55ch;
+  margin: 0;
+}
+
+.section-closing__repo-link {
+  display: inline-block;
+  margin-top: 0.75rem;
+  font-family: var(--font-mono);
+  font-size: clamp(0.875rem, 1.4vw, 1.0625rem);
+  font-weight: 500;
+  color: var(--color-lime);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+  word-break: break-all;
+  transition: color var(--dur-micro) ease, text-decoration-color var(--dur-micro) ease;
+}
+
+.section-closing__repo-link:hover {
+  color: #ffffff;
+}
+
+.section-closing__repo-link:focus-visible {
+  outline: 2px solid var(--color-lime);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .section-closing__repo-link {
+    transition: none;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
    SR-ONLY (accessible live region)
    ───────────────────────────────────────────────────────────────────────── */
 
