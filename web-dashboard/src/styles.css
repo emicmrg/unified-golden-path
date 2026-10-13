@@ -946,3 +946,71 @@ code {
 @media (max-width: 400px) {
   .app-header__meta { display: none; }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   STATUS DOTS — replace emojis in ConnectionBadge, PipelineBadge, timeline
+   Small colored circles (6px) used as pure CSS indicators.
+   No emojis, no external assets — accessible via aria-hidden="true".
+   ───────────────────────────────────────────────────────────────────────── */
+
+.connection-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.connection-badge__dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.connection-badge--connected   .connection-badge__dot { background: var(--color-ok-text); }
+.connection-badge--connecting  .connection-badge__dot { background: var(--color-warn-text); }
+.connection-badge--error       .connection-badge__dot { background: var(--color-alarm-text); }
+.connection-badge--disconnected .connection-badge__dot { background: var(--color-text-muted); }
+
+/* Generic status dot — used in badges and timeline events */
+.status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+.status-dot--passing { background: var(--color-ok-text); }
+.status-dot--failing { background: var(--color-alarm-text); }
+.status-dot--unknown { background: var(--color-text-muted); }
+.status-dot--info    { background: var(--color-accent); }
+.status-dot--warn    { background: var(--color-warn-text); }
+.status-dot--alarm   { background: var(--color-alarm-text); }
+
+/* Badge with inline dot */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+/* PR card icon */
+.pr-card {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.pr-card__icon {
+  flex-shrink: 0;
+  color: var(--color-accent);
+}
+
+/* Timeline event dot */
+.timeline-event__dot {
+  margin-top: 0.35em;
+  flex-shrink: 0;
+}

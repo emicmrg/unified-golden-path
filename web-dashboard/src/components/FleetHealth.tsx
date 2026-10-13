@@ -47,16 +47,18 @@ function IconBeakerLg(): React.ReactElement {
 
 function ConnectionBadge({ status }: { status: MqttConnectionStatus }): React.ReactElement {
   const labels: Record<MqttConnectionStatus, string> = {
-    disconnected: "⚫ Disconnected",
-    connecting: "🟡 Connecting…",
-    connected: "🟢 Connected",
-    error: "🔴 Error",
+    disconnected: "Disconnected",
+    connecting: "Connecting…",
+    connected: "Connected",
+    error: "Error",
   };
   return (
     <span
       className={`connection-badge connection-badge--${status}`}
       aria-label={`MQTT connection status: ${labels[status]}`}
     >
+      {/* CSS dot — colored via connection-badge--* modifier */}
+      <span className="connection-badge__dot" aria-hidden="true" />
       {labels[status]}
     </span>
   );

@@ -32,13 +32,15 @@ function IconStarLg(): React.ReactElement {
 
 function PipelineBadge({ status }: { status: PipelineStatus }): React.ReactElement {
   const config: Record<PipelineStatus, { label: string; className: string }> = {
-    passing: { label: "✅ Passing", className: "badge badge--green badge-status" },
-    failing: { label: "❌ Failing", className: "badge badge--red badge-status" },
-    unknown: { label: "⚪ Unknown", className: "badge badge--gray badge-status" },
+    passing: { label: "Passing", className: "badge badge--green badge-status" },
+    failing: { label: "Failing", className: "badge badge--red badge-status" },
+    unknown: { label: "Unknown", className: "badge badge--gray badge-status" },
   };
   const { label, className } = config[status];
   return (
     <span className={className} aria-label={`Pipeline status: ${label}`}>
+      {/* CSS dot encoded via ::before in styles.css */}
+      <span className={`status-dot status-dot--${status}`} aria-hidden="true" />
       {label}
     </span>
   );
@@ -104,14 +106,14 @@ export function GoldenPath(): React.ReactElement {
           {/* Show handler note only when status is unknown and there is an explanatory note */}
           {pipeline.status === "unknown" && pipeline.note && (
             <p className="placeholder-note">
-              ℹ️ {pipeline.note}
+              {pipeline.note}
             </p>
           )}
 
           {/* Generic fallback when unknown and no note (e.g. data is null / loading) */}
           {pipeline.status === "unknown" && !pipeline.note && !loading && data !== null && (
             <p className="placeholder-note">
-              ℹ️ Pipeline status unavailable — the GitHub Actions API did not return a result.
+              Pipeline status unavailable — the GitHub Actions API did not return a result.
             </p>
           )}
 
@@ -139,10 +141,11 @@ export function GoldenPath(): React.ReactElement {
         <article className="info-card" aria-label="Last IoT Job / OTA">
           <h3>IoT Job / OTA</h3>
           <span className="badge badge--gray badge-status" aria-label="Status: Unknown — no OTA data yet">
-            ⚪ Unknown
+            <span className="status-dot status-dot--unknown" aria-hidden="true" />
+            Unknown
           </span>
           <p className="placeholder-note">
-            ℹ️ No OTA job data available yet. This will show the last firmware update once
+            No OTA job data available yet. This will show the last firmware update once
             edge-firmware OTA is operational.
           </p>
         </article>
