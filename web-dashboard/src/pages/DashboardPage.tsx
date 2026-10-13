@@ -179,7 +179,7 @@ export function DashboardPage(): React.ReactElement {
       <footer className="app-footer" role="contentinfo">
         <p>
           The Unified Golden Path — Slalom Innovation Labs GDL · us-east-1 ·{" "}
-          <a href="https://github.com/slalom-talk-projects/unified-golden-path"
+          <a href="https://github.com/emicmrg/unified-golden-path"
             target="_blank" rel="noopener noreferrer">
             GitHub
           </a>
