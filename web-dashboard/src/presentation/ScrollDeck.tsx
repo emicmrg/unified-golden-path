@@ -8,6 +8,9 @@
  * Hysteresis deadband 40 px prevents oscillation between adjacent steps.
  * Keyboard: window keydown, gated by section visibility, deterministic
  * targetStepRef pattern with scrollend resync (same as ScrollProto).
+ * Active section: rAF-throttled closest-to-center detection (not threshold
+ * IntersectionObserver) so diagram sections — whose sticky column prevents the
+ * section element from ever reaching 35 % intersection — are always detected.
  *
  * Sections:
  *   1. Cover         — full-bleed navy slide, no diagram
@@ -45,7 +48,7 @@ import {
   SelfHealingSubStepContext,
   SH_STEPS,
 } from "./SelfHealingDiagram.js";
-import { selectStep, navigateStep } from "../proto/ScrollProto.js";
+import { selectStep, navigateStep } from "./scrollStep.js";
 
 import "./ScrollDeck.css";
 
@@ -155,8 +158,9 @@ function useSectionVisible(sectionRef: React.RefObject<HTMLElement | null>): boo
 // KeyboardRegistry — single window keydown owner pattern.
 //
 // Each diagram section registers a handler; ScrollDeck dispatches to exactly
-// one section (the activeSection at 0.35 threshold) so two adjacent sections
-// can never both handle the same keystroke.
+// one section (the activeSection — closest-to-center detection) so two
+// adjacent sections can never both handle the same keystroke during a
+// cross-section transition.
 // ─────────────────────────────────────────────────────────────────────────────
 
 type KeyHandler = (e: KeyboardEvent) => void;
@@ -496,7 +500,7 @@ const FIRMWARE_STEPS: StepData[] = [
     title: "Device Identity & IoT Policy",
     bullets: [
       "cert + key + AmazonRootCA1 embedded in flash — provisioned once, never rotated over-the-air",
-      "IoT policy: least-privilege, no wildcards — scoped to this Thing name only",
+      "IoT policy: least-privilege — scoped to the Thing's own namespace, no Resource: *",
       "No ALPN on port 8883 (ALPN applies only when using port 443 — not used here)",
       "Code signing: OFF — integrity via TLS 1.2 transport + SHA-256 OTA digest; not code-signing authenticity",
     ],
@@ -707,7 +711,7 @@ export function ScrollDeck(): React.ReactElement {
 
   // ── Keyboard registry — single owner pattern ────────────────────────────
   // Diagram sections register their handler; ScrollDeck dispatches to exactly
-  // the one section that is currently dominant (activeSection at 0.35 threshold).
+  // the one section that is currently dominant (closest-to-center activeSection).
   // This eliminates the race where two adjacent sections both handle the same
   // ArrowDown/Space keystroke during a cross-section transition.
   const keyHandlersRef = useRef<Map<SectionId, KeyHandler>>(new Map());
@@ -736,20 +740,54 @@ export function ScrollDeck(): React.ReactElement {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // intentional — keyHandlersRef and activeSectionRef are stable refs
 
-  // Track which section is most visible
+  // Track which section is most visible — robust closest-to-center detection.
+  //
+  // RATIONALE: An IntersectionObserver with threshold 0.35 never fires for
+  // diagram sections (the sticky diagram column occupies the viewport, so the
+  // section's own scroll height never reaches 35 % intersection ratio).
+  // Instead we use a rAF-throttled scroll listener that picks the section
+  // whose vertical centre is closest to the viewport centre.  This is the
+  // same approach used by useC1ActiveStep for sub-steps and ALWAYS yields a
+  // valid activeSection regardless of section height.
   useEffect(() => {
-    const observers: IntersectionObserver[] = [];
-    SECTION_META.forEach(({ id }) => {
-      const el = document.getElementById(`section-${id}`);
-      if (!el) return;
-      const io = new IntersectionObserver(
-        ([entry]) => { if (entry.isIntersecting) setActiveSection(id); },
-        { root: null, threshold: 0.35 },
-      );
-      io.observe(el);
-      observers.push(io);
-    });
-    return () => observers.forEach((o) => o.disconnect());
+    let rafId: number | null = null;
+
+    const computeActiveSection = () => {
+      const mid = window.innerHeight / 2;
+      let bestId: SectionId = "cover";
+      let bestDist = Infinity;
+      SECTION_META.forEach(({ id }) => {
+        const el = document.getElementById(`section-${id}`);
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        const center = rect.top + rect.height / 2;
+        const dist = Math.abs(center - mid);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestId = id;
+        }
+      });
+      setActiveSection(bestId);
+    };
+
+    const onScroll = () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        computeActiveSection();
+      });
+    };
+
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll, { passive: true });
+    // Run once immediately so the initial render has the correct active section.
+    computeActiveSection();
+
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
   }, []);
 
   const navigateTo = useCallback((id: SectionId) => {
