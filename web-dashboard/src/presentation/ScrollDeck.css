@@ -397,6 +397,63 @@ html:has(.scroll-deck) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
+   QUICK-NAV BUTTON — fixed, bottom-left, opens /dashboard
+   ───────────────────────────────────────────────────────────────────────── */
+
+.deck-dashboard-btn {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 1.5rem;
+  z-index: 100;
+
+  /* Slalom accent style */
+  background: var(--color-accent);
+  color: #ffffff;
+  border: none;
+  border-radius: var(--radius-pill);
+  padding: 0.5rem 1.125rem;
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+
+  /* Subtle shadow so it lifts above content */
+  box-shadow: 0 2px 8px rgba(12, 98, 251, 0.25), 0 1px 2px rgba(0, 0, 0, 0.08);
+  transition: background var(--dur-micro) ease,
+              box-shadow var(--dur-micro) ease,
+              transform var(--dur-micro) ease;
+}
+
+.deck-dashboard-btn:hover {
+  background: var(--color-accent-hover);
+  box-shadow: 0 4px 16px rgba(12, 98, 251, 0.35), 0 2px 4px rgba(0, 0, 0, 0.10);
+  transform: translateY(-1px);
+}
+
+.deck-dashboard-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 4px rgba(12, 98, 251, 0.2);
+}
+
+.deck-dashboard-btn:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--color-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deck-dashboard-btn {
+    transition: none;
+  }
+  .deck-dashboard-btn:hover {
+    transform: none;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
    SR-ONLY (accessible live region)
    ───────────────────────────────────────────────────────────────────────── */
 

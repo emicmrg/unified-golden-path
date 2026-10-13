@@ -32,6 +32,7 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { useNavigate } from "react-router-dom";
 
 import {
   ArchitectureDiagram,
@@ -707,7 +708,11 @@ function NavDots({
 // ScrollDeck — root
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** sessionStorage key used to persist/restore the active section. */
+const SESSION_KEY = "ugp.deck.lastSection";
+
 export function ScrollDeck(): React.ReactElement {
+  const navigate = useNavigate();
   const [activeSection, setActiveSection] = useState<SectionId>("cover");
 
   // ── Keyboard registry — single owner pattern ────────────────────────────
@@ -729,6 +734,46 @@ export function ScrollDeck(): React.ReactElement {
   // keydown handler (stable reference through the lifetime of ScrollDeck).
   const activeSectionRef = useRef<SectionId>(activeSection);
   useEffect(() => { activeSectionRef.current = activeSection; }, [activeSection]);
+
+  // ── Restore scroll position from sessionStorage (mount only) ───────────
+  // When the user comes back from /dashboard, scroll to where they left off.
+  // Uses a ref to run once and disable itself so it doesn't compete with
+  // subsequent scroll events.
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+
+    const saved = sessionStorage.getItem(SESSION_KEY) as SectionId | null;
+    if (!saved) return;
+
+    // Defer one frame so the DOM is fully laid out before scrolling.
+    const frameId = requestAnimationFrame(() => {
+      const el = document.getElementById(`section-${saved}`);
+      if (!el) return;
+
+      const prefersReduced =
+        typeof window.matchMedia === "function"
+          ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
+          : false;
+
+      el.scrollIntoView({
+        behavior: prefersReduced ? "instant" : "smooth",
+        block: "start",
+      });
+
+      // Clear the key so a hard refresh doesn't re-apply it.
+      sessionStorage.removeItem(SESSION_KEY);
+    });
+
+    return () => cancelAnimationFrame(frameId);
+  }, []); // intentional — mount-only
+
+  // ── Navigate to dashboard, saving the current section first ────────────
+  const handleOpenDashboard = useCallback(() => {
+    sessionStorage.setItem(SESSION_KEY, activeSectionRef.current);
+    navigate("/dashboard");
+  }, [navigate]);
 
   // Single global keydown listener — dispatches to the active section only.
   useEffect(() => {
@@ -804,6 +849,15 @@ export function ScrollDeck(): React.ReactElement {
     <KeyboardRegistryContext.Provider value={{ register, unregister }}>
       <div className="scroll-deck" data-testid="scroll-deck">
         <NavDots activeId={activeSection} onNavigate={navigateTo} />
+
+        {/* Quick-nav: fixed button to open the live dashboard */}
+        <button
+          className="deck-dashboard-btn"
+          aria-label="Open live dashboard"
+          onClick={handleOpenDashboard}
+        >
+          Live dashboard
+        </button>
 
         {/* 1. Cover */}
         <CoverSection />

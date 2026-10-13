@@ -21,6 +21,7 @@
  */
 
 import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { FleetHealth } from "../components/FleetHealth.js";
 import { GoldenPath } from "../components/GoldenPath.js";
 import { SelfHealing } from "../components/SelfHealing.js";
@@ -121,6 +122,7 @@ const TAB_CONFIG: {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function DashboardPage(): React.ReactElement {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<Tab>("fleet");
 
   return (
@@ -137,6 +139,13 @@ export function DashboardPage(): React.ReactElement {
               Platform Engineering Demo · Read Only
             </p>
           </div>
+          <button
+            className="dashboard-back-btn"
+            aria-label="Back to presentation"
+            onClick={() => navigate("/")}
+          >
+            Back to presentation
+          </button>
         </header>
 
         <nav aria-label="Dashboard views" className="tab-nav">
