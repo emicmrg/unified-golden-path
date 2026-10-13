@@ -1,0 +1,356 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   theme-light.css — Slalom light-theme tokens, brand bars, typography,
+   and architecture-diagram classes shared between the ScrollDeck and
+   the old Deck slide engine.
+
+   USAGE: import this file once (e.g. in main.tsx or the deck component).
+   SCOPE: .scroll-deck and .deck both activate these tokens.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─────────────────────────────────────────────────────────────────────────
+   BODY RESET — activate light background when the deck is mounted
+   ───────────────────────────────────────────────────────────────────────── */
+
+body:has(.scroll-deck),
+body:has(.deck) {
+  background: #ffffff;
+  color: #292929;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   SHARED TOKENS — scoped to both .scroll-deck and .deck
+   ───────────────────────────────────────────────────────────────────────── */
+
+.scroll-deck,
+.deck {
+  /* ── Paleta Slalom clara ── */
+  --color-bg:            #ffffff;
+  --color-bg-alt:        #f5f5f5;
+  --color-text:          #292929;
+  --color-text-muted:    #525252;
+  --color-text-secondary:#696969;
+  --color-accent:        #0c62fb;
+  --color-accent-hover:  #0a4ec9;
+  --color-navy:          #002eae;
+  --color-navy-deep:     #000a25;
+  --color-lime:          #deff4d;
+  --color-lavender:      #c3b8ff;
+  --color-coral:         #ff6f5e;
+  --color-cyan:          #37d5e0;
+  --color-blue-pale:     #b6d0fe;
+
+  /* ── Superficies ── */
+  --color-surface:       #ffffff;
+  --color-surface-2:     #f5f5f5;
+  --color-surface-3:     #ebebeb;
+  --color-border:        rgba(15, 28, 65, 0.10);
+  --color-border-mid:    rgba(15, 28, 65, 0.18);
+
+  /* ── Semánticos ── */
+  --color-ok-bg:         rgba(34, 120, 60, 0.07);
+  --color-ok-border:     rgba(34, 120, 60, 0.30);
+  --color-ok-text:       #1a6e32;
+  --color-warn-bg:       rgba(161, 106, 0, 0.07);
+  --color-warn-border:   rgba(161, 106, 0, 0.30);
+  --color-warn-text:     #7a5100;
+  --color-alarm-bg:      rgba(185, 28, 28, 0.07);
+  --color-alarm-border:  rgba(185, 28, 28, 0.30);
+  --color-alarm-text:    #991b1b;
+
+  /* ── Sombras ── */
+  --shadow-sm:   0 1px 2px rgba(0,0,0,0.04), 0 1px 1px rgba(0,0,0,0.03);
+  --shadow-md:   0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.04);
+  --shadow-lg:   0 4px 8px rgba(0,0,0,0.05), 0 12px 24px rgba(0,0,0,0.08);
+  --shadow-hover:0 8px 16px rgba(0,0,0,0.07), 0 16px 32px rgba(0,0,0,0.09);
+
+  /* ── Tipografía ── */
+  --font-sans:    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-display: "Poppins", "Inter", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono:    "JetBrains Mono", "Fira Code", "SF Mono", ui-monospace, monospace;
+
+  /* ── Timing ── */
+  --dur-micro:  150ms;
+  --dur-base:   350ms;
+  --dur-fade:   200ms;
+
+  /* ── Easing ── */
+  --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.45, 0, 0.55, 1);
+
+  /* ── Spacing ── */
+  --sp-1:  0.25rem;
+  --sp-2:  0.5rem;
+  --sp-3:  0.75rem;
+  --sp-4:  1rem;
+  --sp-6:  1.5rem;
+  --sp-8:  2rem;
+  --sp-12: 3rem;
+  --sp-16: 4rem;
+  --sp-24: 6rem;
+
+  /* ── Radius ── */
+  --radius-sm:   0.375rem;
+  --radius-md:   0.75rem;
+  --radius-lg:   1rem;
+  --radius-pill: 999px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   BRAND BARS — 4 vertical decorative stripes on navy slides
+   Used in .section-cover and .section-closing (scrollytelling) and
+   .slide--cover / .slide--closing (legacy deck).
+   ───────────────────────────────────────────────────────────────────────── */
+
+.brand-bars {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+
+/* 4-stripe shorthand via linear-gradient on a single element */
+.brand-bars::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 24px;
+  background: linear-gradient(
+    to right,
+    var(--color-lime)     0  6px,
+    var(--color-lavender) 6px 12px,
+    var(--color-coral)    12px 18px,
+    var(--color-cyan)     18px 24px
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   SLIDE TYPOGRAPHY CLASSES (shared across deck and scroll-deck)
+   ───────────────────────────────────────────────────────────────────────── */
+
+.slide-h1 {
+  font-family: var(--font-display);
+  font-size: clamp(3rem, 6vw, 6rem);
+  font-weight: 800;
+  line-height: 1.0;
+  letter-spacing: -0.02em;
+  font-optical-sizing: auto;
+  color: inherit;
+}
+
+.slide-h1--display {
+  font-family: var(--font-display);
+  font-size: clamp(3.5rem, 7.5vw, 7rem);
+  font-weight: 900;
+  line-height: 0.95;
+  letter-spacing: -0.025em;
+}
+
+.slide-h1__line,
+.slide-h2__line {
+  display: block;
+}
+
+.slide-h2 {
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 4vw, 3.5rem);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.025em;
+  font-optical-sizing: auto;
+  color: var(--color-text);
+}
+
+.slide-h3 {
+  font-family: var(--font-display);
+  font-size: clamp(1.5rem, 2.5vw, 2.25rem);
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.015em;
+  font-optical-sizing: auto;
+  color: var(--color-text);
+}
+
+.slide-body {
+  display: block;
+  font-family: var(--font-sans);
+  font-size: clamp(1.125rem, 1.8vw, 1.5rem);
+  font-weight: 500;
+  line-height: 1.45;
+  letter-spacing: -0.005em;
+  color: var(--color-text);
+}
+
+.slide-body--lead {
+  font-size: clamp(1.25rem, 2vw, 1.75rem);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.slide-body--caption {
+  font-size: clamp(0.875rem, 1.4vw, 1.125rem);
+  font-weight: 500;
+  color: var(--color-text-muted);
+  letter-spacing: 0.01em;
+}
+
+.slide-strong {
+  font-weight: 700;
+  color: var(--color-navy);
+}
+
+.slide-code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: rgba(15, 28, 65, 0.07);
+  color: var(--color-navy);
+  padding: 0.1em 0.4em;
+  border-radius: 0.25em;
+}
+
+/* Cover / closing eyebrow */
+.slide-cover__eyebrow,
+.slide-closing__eyebrow {
+  font-family: var(--font-display);
+  font-size: clamp(0.75rem, 1.2vw, 0.9375rem);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-lime);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   ARCH DIAGRAM SHARED CLASSES (.arch-*)
+   Used by ArchitectureDiagram.css but kept here as the theme extract.
+   ───────────────────────────────────────────────────────────────────────── */
+
+.arch-diagram-root {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--font-sans);
+  color: var(--color-text);
+  background: var(--color-bg);
+}
+
+.arch-diagram-canvas {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--color-bg);
+}
+
+.arch-diagram-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.arch-scrim-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.arch-sidebar {
+  flex: 0 0 280px;
+  max-width: 320px;
+  padding: var(--sp-6) var(--sp-4) var(--sp-6) var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  overflow-y: auto;
+  border-left: 1px solid var(--color-border);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15,28,65,0.12) transparent;
+}
+
+.arch-sidebar::-webkit-scrollbar { width: 4px; }
+.arch-sidebar::-webkit-scrollbar-track { background: transparent; }
+.arch-sidebar::-webkit-scrollbar-thumb { background: rgba(15,28,65,0.15); border-radius: 2px; }
+
+.arch-step-title {
+  font-family: var(--font-display);
+  font-size: clamp(1rem, 1.8vw, 1.375rem);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+  color: var(--color-navy);
+  margin: 0;
+}
+
+.arch-step-bullets {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.arch-step-bullets li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  font-size: clamp(0.875rem, 1.4vw, 1.0625rem);
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--color-text);
+}
+
+.arch-step-bullets li::before {
+  content: "";
+  flex-shrink: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  margin-top: 0.55em;
+}
+
+.arch-step-announce {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Callout boxes used in the Firmware section */
+.arch-callout {
+  background: rgba(12, 98, 251, 0.04);
+  border: 1px solid rgba(12, 98, 251, 0.18);
+  border-radius: var(--radius-md);
+  padding: var(--sp-3) var(--sp-4);
+  font-size: clamp(0.8125rem, 1.3vw, 0.9375rem);
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--color-text);
+}
+
+.arch-callout strong {
+  font-weight: 700;
+  color: var(--color-navy);
+}
+
+/* Honest note — debt callout */
+.arch-note {
+  font-size: clamp(0.75rem, 1.2vw, 0.875rem);
+  color: var(--color-text-muted);
+  font-style: italic;
+  line-height: 1.4;
+}
