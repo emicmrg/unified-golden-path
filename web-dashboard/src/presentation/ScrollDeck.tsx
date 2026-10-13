@@ -21,7 +21,7 @@
  *   6. Architecture  — Diagram A (all AWS services), SubStepContext
  *   7. Agents        — Diagram B (CrewAI), CrewSubStepContext
  *   8. Self-Healing  — Diagram C (Fargate flow), SelfHealingSubStepContext
- *   9. Closing       — navy slide, honest debt
+ *   9. Closing       — navy slide
  *
  * CSP: SVG imported as Vite asset URLs (img-src 'self'). Zero external fonts.
  * A11y: aria-live polite, aria-current on active step, keyboard navigation.
@@ -504,7 +504,7 @@ function AgendaSection(): React.ReactElement {
               file a fix PR end-to-end
             </li>
             <li>
-              <strong className="slide-strong">Wrap-up</strong> — honest debt, takeaways, and
+              <strong className="slide-strong">Wrap-up</strong> — takeaways, and
               Q&amp;A
             </li>
           </ol>
