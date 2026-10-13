@@ -44,15 +44,6 @@ vi.mock("../presentation/assets/aws-architecture.svg", () => ({
 // Mock CSS imports
 vi.mock("../presentation/ArchitectureDiagram.css", () => ({}));
 
-// Mock .mdx slide imports so slides.ts can be imported without Vite's MDX pipeline
-vi.mock("../presentation/slides/07-self-healing-flow.mdx", () => ({ default: () => null }));
-vi.mock("../presentation/slides/01-portada.mdx", () => ({ default: () => null }));
-vi.mock("../presentation/slides/02-plataforma.mdx", () => ({ default: () => null }));
-vi.mock("../presentation/slides/03-dashboard-live.mdx", () => ({ default: () => null }));
-vi.mock("../presentation/slides/05-architecture.mdx", () => ({ default: () => null }));
-vi.mock("../presentation/slides/06-crew-agents.mdx", () => ({ default: () => null }));
-vi.mock("../presentation/slides/04-cierre.mdx", () => ({ default: () => null }));
-
 const {
   SelfHealingDiagram,
   SH_DIAGRAM_STEP_COUNT,
@@ -62,8 +53,6 @@ const {
   SH_SVG_VB_H,
   SelfHealingSubStepContext,
 } = await import("../presentation/SelfHealingDiagram.js");
-
-const { SLIDE_REGISTRY, SH_SLIDE_INDEX } = await import("../presentation/slides.js");
 
 // ── Helper: render with a specific sub-step via context ──────────────────────
 
@@ -532,10 +521,7 @@ describe("SelfHealingDiagram — Lucid SVG background + scrim overlay (Diagrama 
     expect(content).toMatch(/JWT.*RS256|RS256.*JWT/i);
   });
 
-  // ── (i) SLIDE_REGISTRY registration ──────────────────────────────────────
-
-  it("(i) SH_DIAGRAM_STEP_COUNT matches slides.ts SLIDE_REGISTRY entry for SH_SLIDE_INDEX", () => {
-    expect(SLIDE_REGISTRY[SH_SLIDE_INDEX]).toBeDefined();
-    expect(SLIDE_REGISTRY[SH_SLIDE_INDEX].stepCount).toBe(SH_DIAGRAM_STEP_COUNT);
+  it("(i) SH_DIAGRAM_STEP_COUNT is 8 (sanity check)", () => {
+    expect(SH_DIAGRAM_STEP_COUNT).toBe(8);
   });
 });

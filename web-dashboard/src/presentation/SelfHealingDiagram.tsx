@@ -359,10 +359,20 @@ function SHScrimOverlay({ bbox, extraBBoxes = [], reducedMotion }: SHScrimOverla
 // Layout (same CSS classes as ArchitectureDiagram and CrewDiagram):
 //   .arch-diagram (flex row):
 //     .arch-canvas-wrap (flex-1): Lucid SVG background + scrim
-//     .arch-sidebar (~30%): step info panel
+//     .arch-sidebar (~30%): step info panel (hidden when showSidebar=false)
+//
+// Props:
+//   showSidebar — controls whether the internal sidebar panel is rendered.
+//     Default: true (standalone use). Pass false when embedding inside
+//     ScrollDeck, where the left-column narrative already shows step content.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function SelfHealingDiagram(): React.ReactElement {
+interface SelfHealingDiagramProps {
+  /** Show the internal sidebar step panel. Default true. */
+  showSidebar?: boolean;
+}
+
+export function SelfHealingDiagram({ showSidebar = true }: SelfHealingDiagramProps): React.ReactElement {
   const { subStep: step, isActive } = useContext(SelfHealingSubStepContext);
   const reducedMotion = usePrefersReducedMotion();
 
@@ -426,7 +436,7 @@ export function SelfHealingDiagram(): React.ReactElement {
       </div>
 
       {/* ── Sidebar ──────────────────────────────────────────────────── */}
-      {isFirstOverview ? (
+      {showSidebar && (isFirstOverview ? (
         <aside
           className="arch-sidebar arch-sidebar--overview"
           aria-label="Diagram overview"
@@ -470,7 +480,7 @@ export function SelfHealingDiagram(): React.ReactElement {
             </div>
           </div>
         </aside>
-      )}
+      ))}
     </div>
   );
 }

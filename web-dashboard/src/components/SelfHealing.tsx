@@ -32,23 +32,23 @@ function IconCpuChipLg(): React.ReactElement {
 }
 
 // ---------------------------------------------------------------------------
-// Real timeline event configuration
+// Real timeline event configuration — no emojis; use CSS status dots
 // ---------------------------------------------------------------------------
 
-const EVENT_CONFIG: Record<CrewTimelineEvent, { label: string; icon: string }> = {
-  "first-attempt": { label: "First attempt recorded", icon: "🔍" },
-  "attempt-recorded": { label: "Crew attempt", icon: "🔄" },
-  "escalated-to-human": { label: "Escalated to human", icon: "🚨" },
+const EVENT_CONFIG: Record<CrewTimelineEvent, { label: string; dotClass: string }> = {
+  "first-attempt": { label: "First attempt recorded", dotClass: "status-dot--info" },
+  "attempt-recorded": { label: "Crew attempt", dotClass: "status-dot--warn" },
+  "escalated-to-human": { label: "Escalated to human", dotClass: "status-dot--alarm" },
 };
 
 // ---------------------------------------------------------------------------
-// Static block of the 3 crew roles (explanatory context)
+// Static block of the 3 crew roles (explanatory context) — no emojis
 // ---------------------------------------------------------------------------
 
 const CREW_ROLES = [
-  { id: "log-analyst", label: "🔍 Log Analyst", desc: "Analyzes logs and classifies the failure" },
-  { id: "fix-engineer", label: "🔧 Fix Engineer", desc: "Proposes and applies the fix on a branch" },
-  { id: "reviewer", label: "🧐 Reviewer", desc: "Validates the fix and approves the PR" },
+  { id: "log-analyst", label: "Log Analyst", desc: "Analyzes logs and classifies the failure" },
+  { id: "fix-engineer", label: "Fix Engineer", desc: "Proposes and applies the fix on a branch" },
+  { id: "reviewer", label: "Reviewer", desc: "Validates the fix and approves the PR" },
 ];
 
 function CrewRolesContext(): React.ReactElement {
@@ -74,14 +74,14 @@ function CrewRolesContext(): React.ReactElement {
 // ---------------------------------------------------------------------------
 
 function TimelineEventItem({ entry }: { entry: CrewTimelineEntry }): React.ReactElement {
-  const cfg = EVENT_CONFIG[entry.event] ?? { label: entry.event, icon: "📌" };
+  const cfg = EVENT_CONFIG[entry.event] ?? { label: entry.event, dotClass: "status-dot--info" };
   const time = new Date(entry.ts).toLocaleTimeString("en-US");
   return (
     <li
       className="timeline-event timeline-event--enter"
       aria-label={`${cfg.label} — ${entry.runKey} — ${time}`}
     >
-      <span className="timeline-event__icon" aria-hidden="true">{cfg.icon}</span>
+      <span className={`status-dot ${cfg.dotClass} timeline-event__dot`} aria-hidden="true" />
       <div className="timeline-event__body">
         <strong className="timeline-event__label">{cfg.label}</strong>
         <code className="timeline-event__run">{entry.runKey}</code>
@@ -126,7 +126,7 @@ function CircuitBreakerCard({
         <code className="circuit-breaker-card__key">{entry.runKey}</code>
         {entry.escalated && (
           <span className="badge badge--red badge-status" role="status">
-            🚨 Escalated to human
+            Escalated to human
           </span>
         )}
       </header>
@@ -178,10 +178,10 @@ export function SelfHealing(): React.ReactElement {
         )}
       </header>
 
-      {/* M3: degradation banner */}
+      {/* M3: degradation banner — no emoji */}
       {degraded != null && (
         <div role="status" className="alert alert--degraded">
-          ⚠️ {degraded}
+          {degraded}
         </div>
       )}
 
@@ -231,7 +231,13 @@ export function SelfHealing(): React.ReactElement {
           {/* Generated PR */}
           {pr !== null && (
             <div className="pr-card" aria-label={`Pull Request: ${pr.branch}`}>
-              <strong>🔀 Pull Request generated:</strong>{" "}
+              {/* inline SVG arrow (no emoji) */}
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"
+                aria-hidden="true" focusable="false" className="pr-card__icon">
+                <path fillRule="evenodd" clipRule="evenodd"
+                  d="M5.25 4.5A2.25 2.25 0 0 1 7.5 2.25h9A2.25 2.25 0 0 1 18.75 4.5v15a2.25 2.25 0 0 1-2.25 2.25h-9A2.25 2.25 0 0 1 5.25 19.5v-15ZM9 9.75a.75.75 0 0 1 .75-.75h4.5a.75.75 0 0 1 0 1.5h-4.5A.75.75 0 0 1 9 9.75Zm.75 2.25a.75.75 0 0 0 0 1.5h4.5a.75.75 0 0 0 0-1.5h-4.5Z" />
+              </svg>
+              <strong>Pull Request generated:</strong>{" "}
               <a
                 href={pr.url}
                 target="_blank"
