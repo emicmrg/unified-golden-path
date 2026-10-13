@@ -1,44 +1,56 @@
 /**
- * ScrollProto.tsx — Prototipo scrollytelling con 6 variantes de resalte (A, B, C, C1, C2, C3).
+ * ScrollProto.tsx — Scrollytelling prototype with 6 highlight variants (A, B, C, C1, C2, C3).
  *
- * Acceso: ?proto=scroll en la URL
+ * Access: ?proto=scroll in the URL
  *
- * ARQUITECTURA:
- *   - Patrón sticky/pinned: diagrama fijo a la derecha, texto desplazable a la izquierda.
- *   - IntersectionObserver activa el sub-paso cuando el bloque de texto entra en la zona
- *     de lectura (rootMargin: -35% 0px -45% 0px) — scroll-triggered, no scroll-linked.
- *   - Cada variante comparte la misma lógica de estado (activeStep) pero implementa
- *     su propio mecanismo de resalte.
+ * ARCHITECTURE — MODEL A (full-page scroll):
+ *   The PAGE (document / window) is the scroller.
+ *   The diagram is pinned STICKY in the viewport (position:sticky) while the
+ *   8 step blocks (SH_STEPS) flow in the document scroll, each ~90-100vh tall.
+ *   IntersectionObserver root = viewport (null), no nested scroller.
+ *   Step selection: center-distance + 40 px hysteresis deadband (rAF-throttled).
+ *   Scroll-snap: scroll-snap-type: y proximity on the section wrapper, each step
+ *   block has scroll-snap-align: start. PROXIMITY (not mandatory) avoids trapping.
+ *   No nested scroller, no scroll chaining, no overscroll-behavior on inner box.
  *
- * VARIANTES ORIGINALES:
- *   A — Desaturar/atenuar: dos capas de <img> (gris + color); la activa se recorta
- *       con clip-path polygon en coordenadas % del canvas DOM.
- *   B — Zoom/pan cámara: transform scale+translate con spring críticamente amortiguado.
- *   C — Borde/halo: la imagen se atenúa; un ring DOM posicionado sobre la bbox activa.
+ * VARIANTS:
+ *   A  — Desaturate/dim: two <img> layers; active area revealed via clip-path.
+ *   B  — Camera zoom/pan: transform scale+translate with critically-damped spring.
+ *   C  — Halo ring (original): DOM ring over active bbox.
+ *   C1 — Soft halo, no outline [DEFINITIVE]: diffuse box-shadow glow + scale 1.02 spring.
+ *        Model A hardened: full-page scroll, viewport IntersectionObserver,
+ *        center-distance hysteresis, deterministic keyboard nav (targetStepRef),
+ *        cross-fade halo (opacity-only, no position transition), reduced-motion safe.
+ *   C2 — Soft halo + dim: C1 plus background desaturation.
+ *   C3 — Inline SVG highlight: <rect> in viewBox coords; zero DOM offset error.
  *
- * VARIANTES NUEVAS (PR #15 — round 2):
- *   C1 — Halo suave sin contorno: glow difuso (box-shadow grande) + scale 1.02 con spring.
- *        Sin borde nítido, tolera ±3px de imprecisión en la proyección de la bbox.
- *        HARDENED (PR #15 round 3): scroll-snap + hysteresis + keyboard nav +
- *        ResizeObserver + halo cross-fade. VARIANTE DEFINITIVA.
- *   C2 — Halo suave + atenuación: C1 más atenuación del fondo (como A pero suave).
- *        Doble señal de foco; la precisión del halo importa menos.
- *   C3 — Resalte pintado dentro del SVG: el SVG se importa como texto raw (?raw),
- *        se parsea e inyecta inline, y se dibuja un <rect> de realce en coords del
- *        viewBox (con SVG drop-shadow filter). El realce escala junto al diagrama
- *        sin posicionamiento DOM — imposible el desajuste.
+ * REDUCED-MOTION (B1 FIXED):
+ *   @media (prefers-reduced-motion: reduce) block is placed AFTER all base C1
+ *   rules so it wins on equal specificity. With reduced-motion: no scroll-snap,
+ *   no scroll-behavior:smooth, no cross-fade / halo transforms, static layout.
  *
- * LIMITACIÓN CONOCIDA — SVG-as-img + CSP:
- *   Variantes A/B/C operan sobre capas DOM superpuestas a una <img>.
- *   Variantes C1/C2 también (mismo approach, sin border).
- *   Variante C3 inlinea el SVG: accede al viewBox directamente. El SVG de Lucid
- *   NO tiene <g id="..."> semánticos; C3 dibuja los <rect> de realce por bbox en
- *   el mismo sistema de coords que SH_FOCUS_BOXES — robusto y siempre alineado.
+ * MOBILE (B2 FIXED):
+ *   @media (max-width: 48rem) is placed AFTER base rules. Diagram goes sticky
+ *   at the top, text flows beneath it in a single column. No nested scroll.
  *
- * REDUCED-MOTION: sticky desactivado, transforms eliminados, reveal estático.
- *   C1 específico: scroll-snap y scroll-behavior:smooth se eliminan con reduced-motion.
- * ACCESIBILIDAD: aria-live anuncia el paso activo, roles region/tablist, foco por teclado.
- *   C1 específico: navegación ArrowUp/ArrowDown/Space/ArrowLeft/ArrowRight.
+ * KEYBOARD (B3 FIXED):
+ *   targetStepRef advances independently of activeStep (which lags behind scroll
+ *   observer). ArrowDown/Up/Space clamp(target ± 1), then scrollIntoView.
+ *   targetStepRef re-syncs with observed activeStep only when scroll settles.
+ *
+ * HALO CROSS-FADE (B4 FIXED):
+ *   Position transitions REMOVED from .proto-soft-halo-glow. Incoming buffer is
+ *   positioned first (no transition), reflow forced, then opacity swapped so the
+ *   new glow fades in at its correct location without sliding from the old one.
+ *
+ * CONTRAST (B5 FIXED):
+ *   Keyboard hint uses --c-muted (#525252) at full opacity (was 0.65 → ~3.2:1,
+ *   now 1.0 → 5.9:1 AA+). Active state uses --c-accent.
+ *
+ * ACCESSIBILITY:
+ *   - aria-live region announces the step NAME (not "Paso 0").
+ *   - aria-label on keyboard region uses English and lists actual keys.
+ *   - All copy unified to English.
  */
 
 import React, {
@@ -81,38 +93,38 @@ const VARIANTS: VariantMeta[] = [
   {
     id: "A",
     label: "A",
-    title: "Desaturar / Atenuar",
-    desc: "El grupo activo mantiene color; el resto se desatura y atenúa. Sin scrim oscuro.",
+    title: "Desaturate / Dim",
+    desc: "Active group stays in color; the rest desaturates and dims. No dark scrim.",
   },
   {
     id: "B",
     label: "B",
-    title: "Zoom / Pan de cámara",
-    desc: "El diagrama hace zoom y pan con spring hacia la bbox activa, como una cámara.",
+    title: "Camera Zoom / Pan",
+    desc: "Diagram zooms and pans with a spring toward the active bbox, like a camera.",
   },
   {
     id: "C",
     label: "C — original",
-    title: "Borde / Halo de marca",
-    desc: "Ring DOM con borde Slalom Blue sobre la bbox. Puede desalinearse 2-3px (ver C1/C2).",
+    title: "Halo Ring",
+    desc: "DOM ring with Slalom Blue border over the bbox. May mis-align 2-3 px (see C1/C2).",
   },
   {
     id: "C1",
     label: "C1",
-    title: "Halo suave sin contorno",
-    desc: "Glow difuso (box-shadow grande) + scale 1.02. Sin borde nítido, perdona imprecisiones de bbox.",
+    title: "Soft Halo — no outline",
+    desc: "Diffuse glow (large box-shadow) + scale 1.02. No hard border; forgives bbox imprecision.",
   },
   {
     id: "C2",
     label: "C2",
-    title: "Halo suave + atenuación",
-    desc: "C1 con atenuación leve del fondo. Doble señal de foco; la precision del halo importa menos.",
+    title: "Soft Halo + Dim",
+    desc: "C1 with light background desaturation. Double focus signal; halo precision matters less.",
   },
   {
     id: "C3",
     label: "C3",
-    title: "Resalte dentro del SVG",
-    desc: "SVG inline: <rect> de realce en coords del viewBox. Escala perfecto, imposible desalinearse.",
+    title: "Inline SVG highlight",
+    desc: "Inline SVG: <rect> highlight in viewBox coords. Perfect scaling, impossible to mis-align.",
   },
 ];
 
@@ -220,7 +232,7 @@ function projectBBox(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Variant A — Desaturar / Atenuar
+// Variant A — Desaturate / Dim
 // ─────────────────────────────────────────────────────────────────────────────
 
 function VariantADesaturate({
@@ -285,7 +297,7 @@ function VariantADesaturate({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Variant B — Zoom / Pan de cámara
+// Variant B — Camera Zoom / Pan
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface CameraTarget {
@@ -418,7 +430,7 @@ function VariantBZoom({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Variant C — Borde / Halo de marca (ORIGINAL — mantener para comparar)
+// Variant C — Halo ring (original — kept for comparison)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function VariantCHalo({
@@ -476,19 +488,19 @@ function VariantCHalo({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Variant C1 — Halo suave sin contorno  [VARIANTE DEFINITIVA — hardened]
+// Variant C1 — Soft halo, no outline  [DEFINITIVE VARIANT — Model A hardened]
 //
-// Hardening PR #15 round 3:
-//   • ResizeObserver en el canvas para recomputar proyección bbox cuando cambia
-//     el tamaño del contenedor o el zoom del navegador (mismo patrón que VariantBZoom).
-//   • Cross-fade del halo: al cambiar de paso, el glow hace fade-out (opacity 0)
-//     y luego fade-in en la nueva posición, eliminando el salto visual en seco.
-//     Implementado con dos elementos glow (A/B) que se intercalan (double-buffer).
-//   • El posicionamiento lo maneja el propio componente vía ResizeObserver +
-//     recompute, por eso ya no depende del useEffect exterior a la proyección.
+// B4 FIX: Position transitions are REMOVED from the glow element. The incoming
+// buffer is positioned first (style assignment = no CSS transition), then a
+// forced synchronous reflow (el.offsetHeight read) ensures the browser commits
+// the position before the opacity transition fires. This eliminates the diagonal
+// slide from the old position.
 //
-// NOTA: el IntersectionObserver y scroll-snap/hysteresis están en C1Section
-// (ver abajo), que sustituye a VariantSection para la variante C1.
+// Cross-fade with no position slide:
+//   1. Position incoming buffer at new bbox (no transition — instant).
+//   2. Force reflow to commit position.
+//   3. Set data-hidden="false" on incoming → opacity: 0 → 1 (CSS transition).
+//   4. Set data-hidden="true" on outgoing  → opacity: 1 → 0 (CSS transition).
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface GlowPosition {
@@ -512,14 +524,11 @@ function VariantC1SoftHalo({
   const scaleTarget = isOverview ? 1 : 1.02;
   const springScale = useSpringValue(scaleTarget, 0.4);
 
-  // ── Double-buffer glow: glowA and glowB alternate to create cross-fade ──
-  // bufferIdx tells which buffer is "current" (visible). The other fades out.
+  // Double-buffer glow for cross-fade
   const glowARef = useRef<HTMLDivElement>(null);
   const glowBRef = useRef<HTMLDivElement>(null);
   const bufferIdx = useRef<0 | 1>(0);
   const prevStepRef = useRef<number>(-1);
-
-  // Computed glow position (reused by both resize and step change)
   const positionRef = useRef<GlowPosition | null>(null);
 
   const recomputeGlow = useCallback(() => {
@@ -529,7 +538,6 @@ function VariantC1SoftHalo({
     if (!canvas || !glowA || !glowB) return;
 
     if (isOverview) {
-      // Hide both buffers
       glowA.dataset.hidden = "true";
       glowB.dataset.hidden = "true";
       positionRef.current = null;
@@ -548,7 +556,7 @@ function VariantC1SoftHalo({
     };
     positionRef.current = pos;
 
-    // Apply to the current active buffer (no cross-fade on resize — just reposition)
+    // On resize: reposition the current active buffer (no cross-fade needed)
     const cur = bufferIdx.current === 0 ? glowA : glowB;
     cur.style.left = `${pos.left}px`;
     cur.style.top = `${pos.top}px`;
@@ -556,7 +564,7 @@ function VariantC1SoftHalo({
     cur.style.height = `${pos.height}px`;
   }, [bbox, isOverview, canvasRef]);
 
-  // ResizeObserver — recompute on container resize / zoom (same pattern as VariantBZoom)
+  // ResizeObserver — recompute on container resize / zoom
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;
@@ -566,6 +574,7 @@ function VariantC1SoftHalo({
   }, [canvasRef, recomputeGlow]);
 
   // Step change — cross-fade between buffers
+  // B4 FIX: position is set BEFORE opacity transition, with forced reflow in between.
   useEffect(() => {
     const canvas = canvasRef.current;
     const glowA = glowARef.current;
@@ -595,26 +604,30 @@ function VariantC1SoftHalo({
     positionRef.current = pos;
 
     if (!stepChanged) {
-      // Just update scale on the current active buffer
+      // Scale update on current buffer only
       const cur = bufferIdx.current === 0 ? glowA : glowB;
       cur.style.transform = `scale(${springScale.toFixed(4)})`;
       return;
     }
 
-    // Cross-fade: prepare the INCOMING buffer at the new position (invisible),
-    // then swap — incoming fades in, outgoing fades out.
+    // Cross-fade: B4 FIX — position incoming buffer FIRST, force reflow, then swap opacity.
     const next: 0 | 1 = bufferIdx.current === 0 ? 1 : 0;
     const incoming = next === 0 ? glowA : glowB;
     const outgoing = bufferIdx.current === 0 ? glowA : glowB;
 
-    // Position incoming at new spot before making it visible
+    // 1. Position incoming at new location. CSS has NO position transitions (B4 fix),
+    //    so this is instantaneous.
     incoming.style.left = `${pos.left}px`;
     incoming.style.top = `${pos.top}px`;
     incoming.style.width = `${pos.width}px`;
     incoming.style.height = `${pos.height}px`;
     incoming.style.transform = `scale(${springScale.toFixed(4)})`;
 
-    // Swap visibility
+    // 2. Force synchronous reflow so the browser commits the new position
+    //    before the opacity transition starts.
+    void incoming.offsetHeight;
+
+    // 3. Swap opacity — only the opacity transition fires (200ms ease-out).
     incoming.dataset.hidden = "false";
     outgoing.dataset.hidden = "true";
 
@@ -634,7 +647,7 @@ function VariantC1SoftHalo({
         draggable={false}
         aria-hidden="true"
       />
-      {/* Double-buffer glow — glowA and glowB alternate for cross-fade */}
+      {/* Double-buffer glow — glowA and glowB alternate for cross-fade (B4) */}
       <div ref={glowARef} className="proto-soft-halo-glow" data-hidden="true" />
       <div ref={glowBRef} className="proto-soft-halo-glow" data-hidden="true" />
     </div>
@@ -642,12 +655,7 @@ function VariantC1SoftHalo({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Variant C2 — Halo suave + atenuación
-//
-// Técnica: C1 (glow difuso) + capa de desaturación del fondo (como A, pero
-// con atenuación más suave: opacity 0.5 / saturate 0.15 en lugar de 0.08/0.38).
-// Doble señal de foco: el ojo sigue el área con color + glow; la imprecisión
-// del halo es menos perceptible porque la atenuación global ya dirige la atención.
+// Variant C2 — Soft halo + dim
 // ─────────────────────────────────────────────────────────────────────────────
 
 function VariantC2HaloPlusDim({
@@ -666,7 +674,6 @@ function VariantC2HaloPlusDim({
   const [clipPath, setClipPath] = useState<string>("inset(0 0 0 0)");
   const glowRef = useRef<HTMLDivElement>(null);
 
-  // Reuse clip-path mechanism from A for the color layer
   useEffect(() => {
     if (isOverview || !canvasRef.current) {
       setClipPath("inset(0 0 0 0)");
@@ -677,7 +684,7 @@ function VariantC2HaloPlusDim({
     if (!projected) return;
 
     const { left, top, width, height } = projected;
-    const PAD = 14; // slightly larger pad than A for a softer edge
+    const PAD = 14;
     const cw = canvas.clientWidth;
     const ch = canvas.clientHeight;
 
@@ -689,7 +696,6 @@ function VariantC2HaloPlusDim({
     setClipPath(`inset(${t}px ${r}px ${b}px ${l}px round 14px)`);
   }, [activeStep, bbox, isOverview, canvasRef]);
 
-  // Glow overlay positioning
   useEffect(() => {
     const glow = glowRef.current;
     const canvas = canvasRef.current;
@@ -716,7 +722,6 @@ function VariantC2HaloPlusDim({
       ref={canvasRef}
       aria-hidden="true"
     >
-      {/* Capa gris base — siempre visible, atenuación suave */}
       <img
         src={selfHealingFlowSvgUrl}
         alt=""
@@ -725,7 +730,6 @@ function VariantC2HaloPlusDim({
         aria-hidden="true"
         data-overview={isOverview ? "true" : "false"}
       />
-      {/* Capa color — recortada a la bbox activa */}
       <img
         src={selfHealingFlowSvgUrl}
         alt=""
@@ -736,7 +740,6 @@ function VariantC2HaloPlusDim({
           clipPath: isOverview ? "inset(0 0 0 0)" : clipPath,
         }}
       />
-      {/* Glow overlay — sin border, sombra difusa */}
       <div
         ref={glowRef}
         className="proto-soft-halo-glow proto-soft-halo-glow--c2"
@@ -747,64 +750,30 @@ function VariantC2HaloPlusDim({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Variant C3 — Resalte pintado dentro del SVG (inline SVG)
-//
-// Técnica: el SVG se importa como texto raw (selfHealingFlowSvgRaw) y se inyecta
-// directamente en el DOM con dangerouslySetInnerHTML. Sobre el <g> raíz del SVG
-// se añade un <g class="proto-c3-highlights"> con <rect> elements en coords del
-// viewBox (los mismos SH_FOCUS_BOXES), con un SVG filter de blur/glow.
-//
-// Como el <rect> de realce vive en el viewBox del SVG, escala junto con el
-// diagrama sin ningún cálculo DOM — imposible desalinearse.
-//
-// LIMITACIÓN CONOCIDA: el SVG de Lucid no tiene <g id="..."> semánticos. Los
-// <rect> de realce se dibujan por bbox (SH_FOCUS_BOXES) en el mismo sistema de
-// coords, lo cual es robusto. El translate(-259 0) del <g> raíz ya está
-// compensado en SH_FOCUS_BOXES (son coords del viewBox externo, no del <g> interno).
-//
-// SEGURIDAD: dangerouslySetInnerHTML se usa sobre un asset bundleado (no datos
-// externos); el SVG es un archivo local controlado. No hay contenido dinámico
-// de usuario. El filtro SVG es markup inerte, no ejecuta scripts.
+// Variant C3 — Inline SVG highlight
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Lucid exports SVG with fixed width/height attributes but NO viewBox.
-// For inline SVG to scale correctly via CSS, we need to:
-//   1. Add a viewBox matching the original dimensions (SH_SVG_VB_W x SH_SVG_VB_H)
-//   2. Strip the fixed width/height so CSS controls the size
-//   3. Add preserveAspectRatio="xMidYMid meet" so it behaves like object-fit:contain
-//
-// All coordinate systems (SH_FOCUS_BOXES, the translate(-259 0) on the inner <g>)
-// remain unchanged because viewBox "0 0 W H" with original W/H is identity.
 const C3_SVG_BASE: string = (() => {
   let s = selfHealingFlowSvgRaw;
-  // 1. Add viewBox (Lucid SVG has no viewBox — uses absolute width/height)
   if (!s.match(/<svg\b[^>]*viewBox/)) {
     s = s.replace(
       /(<svg\b[^>]*?)>/,
       `$1 viewBox="0 0 ${SH_SVG_VB_W} ${SH_SVG_VB_H}" preserveAspectRatio="xMidYMid meet">`,
     );
   }
-  // 2. Strip fixed width/height from <svg> so CSS controls size
   s = s.replace(/(<svg\b[^>]*?)\s+width="[^"]*"/, "$1");
   s = s.replace(/(<svg\b[^>]*?)\s+height="[^"]*"/, "$1");
   return s;
 })();
 
-// Build the SVG markup with the highlight <rect> injected for the active step.
-// We insert a <defs> with the glow filter and a <g> with the highlight rect
-// BEFORE the closing </svg> tag.
 function buildC3Svg(activeStep: number): string {
   const bbox = SH_FOCUS_BOXES[activeStep] ?? null;
 
-  // The filter id must be stable per step to avoid React reconciliation issues
   const filterId = "proto-c3-glow";
   const PAD = 14;
-  const rx = 14; // rounded corners, same as existing highlight rings
-
-  // Slalom Blue color components for the glow
+  const rx = 14;
   const glowColor = "#0C62FB";
 
-  // Build the highlight overlay group
   let highlightGroup = "";
   if (bbox !== null) {
     const hx = Math.max(0, bbox.x - PAD);
@@ -829,13 +798,11 @@ function buildC3Svg(activeStep: number): string {
     </filter>
   </defs>
   <g class="proto-c3-highlights" aria-hidden="true">
-    <!-- Soft fill background — painted in viewBox coords, scales with SVG -->
     <rect
       x="${hx}" y="${hy}" width="${hw}" height="${hh}" rx="${rx}"
       fill="${glowColor}" fill-opacity="0.07"
       filter="url(#${filterId})"
     />
-    <!-- Soft ring — no hard border, uses drop-shadow filter -->
     <rect
       x="${hx}" y="${hy}" width="${hw}" height="${hh}" rx="${rx}"
       fill="none"
@@ -845,7 +812,6 @@ function buildC3Svg(activeStep: number): string {
   </g>`;
   }
 
-  // Inject before </svg>
   return C3_SVG_BASE.replace(/<\/svg>\s*$/, `${highlightGroup}</svg>`);
 }
 
@@ -854,7 +820,6 @@ function VariantC3InlineSvg({
 }: {
   activeStep: number;
 }): React.ReactElement {
-  // Build the SVG string with the highlight for this step
   const svgMarkup = useMemo(() => buildC3Svg(activeStep), [activeStep]);
 
   return (
@@ -863,9 +828,8 @@ function VariantC3InlineSvg({
       aria-hidden="true"
     >
       {/*
-        dangerouslySetInnerHTML: safe here because selfHealingFlowSvgRaw is a
-        bundled asset (not user input). The injected highlight is static markup.
-        No script elements, no external loads. Meets self-hosted CSP.
+        dangerouslySetInnerHTML: safe — selfHealingFlowSvgRaw is a bundled asset,
+        not user input. Injected highlight is static markup with no script elements.
       */}
       <div
         className="proto-c3-svg-wrap"
@@ -877,24 +841,23 @@ function VariantC3InlineSvg({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Hook: useC1ActiveStep — deterministic step selection via center-distance
+// Hook: useC1ActiveStep — MODEL A version
 //
-// Replaces IntersectionObserver for C1. Strategy:
-//   1. On every scroll event of the steps container (throttled with rAF), compute
-//      each step's distance from the container's visible center.
-//   2. Pick the step with minimum distance — DETERMINISTIC, no ambiguity.
-//   3. Hysteresis deadband: only commit a step change when the new winner's
-//      center-distance is < (prevWinner's center-distance - DEADBAND), preventing
-//      oscillation when two steps are nearly equidistant.
+// MODEL A: root = viewport (null). Step blocks live in the document scroll,
+// not in a nested container. We listen on WINDOW scroll events and measure
+// each step block's distance from the VIEWPORT center.
 //
-// Result: activeStep never oscillates, regardless of scroll speed.
+// Hysteresis deadband: 40 px. Only commit a step change when the new winner
+// beats the previous winner by more than DEADBAND px — prevents oscillation
+// when two steps are nearly equidistant.
+//
+// rAF throttling: scroll events fire at display refresh rate via requestAnimationFrame.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const C1_HYSTERESIS_PX = 40; // deadband: 40px margin before switching step
+const C1_HYSTERESIS_PX = 40;
 
 function useC1ActiveStep(
   stepRefs: React.RefObject<(HTMLElement | null)[]>,
-  scrollContainerRef: React.RefObject<HTMLDivElement>,
   stepCount: number,
   enabled: boolean,
 ): number {
@@ -903,13 +866,11 @@ function useC1ActiveStep(
   const rafRef = useRef<number | null>(null);
 
   const compute = useCallback(() => {
-    const container = scrollContainerRef.current;
     const steps = stepRefs.current;
-    if (!container || !steps) return;
+    if (!steps) return;
 
-    // Visible center of the scroll container (in the container's coordinate space)
-    const containerRect = container.getBoundingClientRect();
-    const containerCenter = containerRect.top + containerRect.height / 2;
+    // Viewport center — MODEL A uses window/viewport as scroll root
+    const viewportCenter = window.innerHeight / 2;
 
     let bestIdx = 0;
     let bestDist = Infinity;
@@ -919,22 +880,21 @@ function useC1ActiveStep(
       if (!el) continue;
       const rect = el.getBoundingClientRect();
       const elCenter = rect.top + rect.height / 2;
-      const dist = Math.abs(elCenter - containerCenter);
+      const dist = Math.abs(elCenter - viewportCenter);
       if (dist < bestDist) {
         bestDist = dist;
         bestIdx = i;
       }
     }
 
-    // Hysteresis: only switch if the new winner beats the current by DEADBAND
+    // Hysteresis: only switch if new winner beats current by DEADBAND px
     const prevIdx = committedRef.current;
     if (bestIdx !== prevIdx) {
-      // Re-compute distance for the currently committed step
       const prevEl = steps[prevIdx];
       if (prevEl) {
         const prevRect = prevEl.getBoundingClientRect();
         const prevCenter = prevRect.top + prevRect.height / 2;
-        const prevDist = Math.abs(prevCenter - containerCenter);
+        const prevDist = Math.abs(prevCenter - viewportCenter);
         if (bestDist < prevDist - C1_HYSTERESIS_PX) {
           committedRef.current = bestIdx;
           setActiveStep(bestIdx);
@@ -944,16 +904,12 @@ function useC1ActiveStep(
         setActiveStep(bestIdx);
       }
     }
-  }, [scrollContainerRef, stepRefs, stepCount]);
+  }, [stepRefs, stepCount]);
 
   useEffect(() => {
     if (!enabled) return;
 
-    // The scroll container is the steps div (overflow-y: auto with snap),
-    // NOT window. We listen on the container element directly.
-    const container = scrollContainerRef.current;
-    if (!container) return;
-
+    // MODEL A: listen on WINDOW (not a nested container)
     const onScroll = () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
       rafRef.current = requestAnimationFrame(() => {
@@ -962,100 +918,122 @@ function useC1ActiveStep(
       });
     };
 
-    container.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", onScroll, { passive: true });
     // Initial compute
     compute();
 
     return () => {
-      container.removeEventListener("scroll", onScroll);
+      window.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", onScroll);
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
-  }, [enabled, compute, scrollContainerRef]);
+  }, [enabled, compute]);
 
   return activeStep;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// C1Section — hardened VariantSection specific to C1
+// C1Section — Model A layout for the definitive C1 variant
 //
-// Differences from the generic VariantSection:
-//   • Uses useC1ActiveStep (center-distance + hysteresis) instead of
-//     IntersectionObserver → eliminates oscillation between neighbors.
-//   • Adds CSS scroll-snap on the steps container so the browser settles on
-//     exactly one step at a time, removing ambiguous intermediate positions.
-//     Uses scroll-snap-type: y proximity (not mandatory) — proximity is less
-//     aggressive: it only snaps if the scroll lands within ~50% of a snap point,
-//     so a deliberate fast flick still works. Mandatory would lock every scroll
-//     which feels too mechanical for a talk demo on a trackpad.
-//     With prefers-reduced-motion: snap is removed entirely.
-//   • Keyboard navigation: ArrowDown / Space / ArrowRight → next step;
-//     ArrowUp / ArrowLeft → prev step. Smooth scroll to step section.
-//     focus is managed: the scroll container gets focus on mount so arrows work
-//     without first clicking.
-//   • aria-live region announces each step transition.
-//   • Keyboard hint: a subtle label at the bottom of the sticky panel.
+// MODEL A differences vs. old nested-scroller approach:
+//   • No overflow:scroll column. Page body is the scroller.
+//   • Diagram: position:sticky, stays in viewport while steps flow past.
+//   • Each step block: ~90-100vh tall, gives generous scroll travel.
+//   • scroll-snap: scroll-snap-type: y proximity on the section wrapper,
+//     scroll-snap-align: start on each step block. PROXIMITY avoids trapping.
+//   • IntersectionObserver / step detection: viewport root (null), NOT a nested div.
+//   • B3 FIX: targetStepRef advances independently. Keyboard handler uses
+//     targetStepRef (not activeStep) so rapid keypresses don't lose pulsations.
+//     targetStepRef re-syncs with observed activeStep only after scroll settles.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function C1Section({ isVisible }: { isVisible: boolean }): React.ReactElement {
   const variant = VARIANTS.find((v) => v.id === "C1")!;
   const [announcement, setAnnouncement] = useState("");
   const stepRefs = useRef<(HTMLElement | null)[]>([]);
-  // stepsScrollRef: the overflow-y scroll container that houses the step articles
-  const stepsScrollRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
   const announcerId = useId();
 
-  // Deterministic step via center-distance + hysteresis
-  // The scroll container is stepsScrollRef (overflow-y: auto with snap), not window.
-  const activeStep = useC1ActiveStep(stepRefs, stepsScrollRef, SH_STEPS.length, isVisible);
+  // MODEL A: no scrollContainerRef — hook listens on window
+  const activeStep = useC1ActiveStep(stepRefs, SH_STEPS.length, isVisible);
 
-  // Announce step change for screen readers
+  // B3 FIX: targetStepRef advances independently of activeStep.
+  // Keyboard handler updates this ref directly; it is NOT derived from activeStep.
+  // Re-sync with observed activeStep only when scroll settles (scrollend event or
+  // a small debounce on scroll).
+  const targetStepRef = useRef<number>(0);
+
+  // Sync targetStepRef when scroll settles (idle after scroll stops)
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const onScroll = () => {
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = setTimeout(() => {
+        // Scroll has settled — re-sync target with observed step
+        targetStepRef.current = activeStep;
+      }, 150);
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    };
+  }, [activeStep]);
+
+  // Announce step change — announce step NAME, not "Paso N" (accessibility)
   useEffect(() => {
     const step = SH_STEPS[activeStep];
     if (!step) return;
-    setAnnouncement(`${variant.title} — Paso ${activeStep}: ${step.title}`);
-  }, [activeStep, variant.title]);
+    setAnnouncement(step.title);
+  }, [activeStep]);
 
-  // Reduced-motion detection for keyboard scroll behavior
+  // Reduced-motion detection
   const prefersReducedMotion =
     typeof window !== "undefined" && typeof window.matchMedia === "function"
       ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
       : false;
 
-  // Keyboard navigation: smooth-scroll to a step by index
+  // scrollToStep: scrollIntoView on the document (MODEL A)
   const scrollToStep = useCallback(
     (idx: number) => {
       const el = stepRefs.current[idx];
       if (!el) return;
       el.scrollIntoView({
         behavior: prefersReducedMotion ? "instant" : "smooth",
-        block: "center",
+        block: "start",
       });
     },
     [prefersReducedMotion],
   );
 
-  // Keyboard handler — ArrowDown/Up/Space/Left/Right
+  // B3 FIX: handleKeyDown uses targetStepRef (not activeStep).
+  // target = clamp(targetStepRef.current ± 1), scrollIntoView, update ref.
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
       const last = SH_STEPS.length - 1;
+      let next: number | null = null;
+
       if (e.key === "ArrowDown" || e.key === "ArrowRight" || e.key === " ") {
         e.preventDefault();
-        scrollToStep(Math.min(activeStep + 1, last));
+        next = Math.min(targetStepRef.current + 1, last);
       } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
         e.preventDefault();
-        scrollToStep(Math.max(activeStep - 1, 0));
+        next = Math.max(targetStepRef.current - 1, 0);
       } else if (e.key === "Home") {
         e.preventDefault();
-        scrollToStep(0);
+        next = 0;
       } else if (e.key === "End") {
         e.preventDefault();
-        scrollToStep(last);
+        next = last;
+      }
+
+      if (next !== null) {
+        targetStepRef.current = next; // advance ref immediately — deterministic
+        scrollToStep(next);
       }
     },
-    [activeStep, scrollToStep],
+    [scrollToStep],
   );
 
   const currentStep = SH_STEPS[activeStep] ?? SH_STEPS[0];
@@ -1063,9 +1041,9 @@ function C1Section({ isVisible }: { isVisible: boolean }): React.ReactElement {
   return (
     <section
       className={`proto-section proto-section--c1${isVisible ? "" : " proto-section--hidden"}`}
-      aria-label={`Variante C1 — definitiva: ${variant.title}`}
+      aria-label="Self-Healing Flow — C1 Soft Halo (definitive variant)"
     >
-      {/* Accessible live region */}
+      {/* Accessible live region — announces step NAME, not index (B5 copy fix) */}
       <div
         id={announcerId}
         role="status"
@@ -1076,27 +1054,33 @@ function C1Section({ isVisible }: { isVisible: boolean }): React.ReactElement {
         {announcement}
       </div>
 
-      {/* Variant banner with "definitiva" badge */}
+      {/* Variant banner */}
       <div className="proto-variant-label" aria-hidden="true">
         <span className="proto-variant-label__tag">C1</span>
         <p className="proto-variant-label__title">{variant.title}</p>
-        <span className="proto-variant-label__badge">Variante definitiva</span>
+        <span className="proto-variant-label__badge">Definitive variant</span>
         <p className="proto-variant-label__desc">{variant.desc}</p>
       </div>
 
-      {/* Story layout */}
+      {/*
+        MODEL A story layout:
+        - proto-story--model-a: CSS grid with sticky diagram column
+        - proto-steps--model-a: plain document flow, NO overflow:scroll
+        - Each step block is ~95vh tall for generous scroll travel
+        - keyboard handler on the wrapper div (tabIndex={0})
+      */}
       <SelfHealingSubStepContext.Provider
         value={{ subStep: activeStep, isActive: isVisible }}
       >
         <div
-          className="proto-story"
+          className="proto-story proto-story--model-a"
           role="region"
-          aria-label="Navegacion por teclado: flechas Arriba/Abajo para avanzar pasos"
+          aria-label="Self-Healing steps — use Arrow keys, Space, Home, End to navigate"
           tabIndex={0}
           onKeyDown={handleKeyDown}
         >
-          {/* ── Text column with scroll-snap ── */}
-          <div className="proto-steps proto-steps--c1-snap" ref={stepsScrollRef}>
+          {/* ── Text column: plain document flow (MODEL A) ── */}
+          <div className="proto-steps proto-steps--model-a">
             {SH_STEPS.map((step, idx) => (
               <article
                 key={step.id}
@@ -1104,7 +1088,7 @@ function C1Section({ isVisible }: { isVisible: boolean }): React.ReactElement {
                   stepRefs.current[idx] = el;
                 }}
                 data-step-idx={idx}
-                className="proto-step proto-step--snap"
+                className="proto-step proto-step--model-a"
                 data-active={activeStep === idx ? "true" : "false"}
                 aria-current={activeStep === idx ? "true" : undefined}
                 aria-labelledby={`${announcerId}-step-${idx}`}
@@ -1131,14 +1115,14 @@ function C1Section({ isVisible }: { isVisible: boolean }): React.ReactElement {
             ))}
           </div>
 
-          {/* ── Diagram column (sticky pin) ── */}
-          <div className="proto-diagram-pin" aria-hidden="true">
+          {/* ── Diagram column: position:sticky (MODEL A) ── */}
+          <div className="proto-diagram-pin proto-diagram-pin--model-a" aria-hidden="true">
             <VariantC1SoftHalo activeStep={activeStep} canvasRef={canvasRef} />
 
             {/* Step label under diagram */}
             <p className="proto-step-label" aria-hidden="true">
               {activeStep === 0 || activeStep === SH_STEPS.length - 1 ? (
-                "Overview — scroll down to walk through each step"
+                "Overview — scroll to walk through each step"
               ) : (
                 <>
                   <span>{currentStep.title.split("—")[0]}</span>
@@ -1149,9 +1133,10 @@ function C1Section({ isVisible }: { isVisible: boolean }): React.ReactElement {
               )}
             </p>
 
-            {/* Keyboard hint — subtle, aria-hidden */}
+            {/* B5 FIX: keyboard hint at full opacity (was opacity 0.65 → ~3.2:1).
+                Full --c-muted color = 5.9:1 AA+. Active state = --c-accent. */}
             <p className="proto-keyboard-hint" aria-hidden="true">
-              Use arrow keys to navigate steps
+              Arrow keys · Space · Home · End to navigate
             </p>
           </div>
         </div>
@@ -1161,7 +1146,8 @@ function C1Section({ isVisible }: { isVisible: boolean }): React.ReactElement {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// VariantSection — una instancia completa de la sección scrollytelling
+// VariantSection — generic section for variants A, B, C, C2, C3
+// Uses window scroll + IntersectionObserver with root = viewport (MODEL A)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function VariantSection({
@@ -1177,7 +1163,7 @@ function VariantSection({
   const canvasRef = useRef<HTMLDivElement>(null);
   const announcerId = useId();
 
-  // IntersectionObserver: activa el paso cuando entra en zona de lectura
+  // IntersectionObserver with root = viewport (null) — MODEL A
   useEffect(() => {
     if (!isVisible) return;
 
@@ -1192,7 +1178,8 @@ function VariantSection({
           setActiveStep(idx);
         }
       },
-      { rootMargin: "-30% 0px -40% 0px", threshold: [0, 0.25, 0.6] },
+      // root: null = viewport (MODEL A)
+      { root: null, rootMargin: "-30% 0px -40% 0px", threshold: [0, 0.25, 0.6] },
     );
 
     stepRefs.current.forEach((el) => {
@@ -1202,21 +1189,19 @@ function VariantSection({
     return () => observer.disconnect();
   }, [isVisible]);
 
-  // Announce step change for screen readers
   useEffect(() => {
     const step = SH_STEPS[activeStep];
     if (!step) return;
-    setAnnouncement(`${variant.title} — Paso ${activeStep}: ${step.title}`);
-  }, [activeStep, variant.title]);
+    setAnnouncement(step.title);
+  }, [activeStep]);
 
   const currentStep = SH_STEPS[activeStep] ?? SH_STEPS[0];
 
   return (
     <section
       className={`proto-section${isVisible ? "" : " proto-section--hidden"}`}
-      aria-label={`Variante ${variant.id}: ${variant.title}`}
+      aria-label={`Variant ${variant.id}: ${variant.title}`}
     >
-      {/* Accessible live region */}
       <div
         id={announcerId}
         role="status"
@@ -1227,20 +1212,18 @@ function VariantSection({
         {announcement}
       </div>
 
-      {/* Variant banner */}
       <div className="proto-variant-label" aria-hidden="true">
         <span className="proto-variant-label__tag">{variant.id}</span>
         <p className="proto-variant-label__title">{variant.title}</p>
         <p className="proto-variant-label__desc">{variant.desc}</p>
       </div>
 
-      {/* Story layout */}
       <SelfHealingSubStepContext.Provider
         value={{ subStep: activeStep, isActive: isVisible }}
       >
-        <div className="proto-story">
-          {/* ── Text column ── */}
-          <div className="proto-steps">
+        <div className="proto-story proto-story--model-a">
+          {/* Text column — document flow */}
+          <div className="proto-steps proto-steps--model-a">
             {SH_STEPS.map((step, idx) => (
               <article
                 key={step.id}
@@ -1248,7 +1231,7 @@ function VariantSection({
                   stepRefs.current[idx] = el;
                 }}
                 data-step-idx={idx}
-                className="proto-step"
+                className="proto-step proto-step--model-a"
                 data-active={activeStep === idx ? "true" : "false"}
                 aria-current={activeStep === idx ? "true" : undefined}
                 aria-labelledby={`${announcerId}-step-${idx}`}
@@ -1275,48 +1258,27 @@ function VariantSection({
             ))}
           </div>
 
-          {/* ── Diagram column (sticky pin) ── */}
-          <div className="proto-diagram-pin" aria-hidden="true">
+          {/* Diagram column — sticky */}
+          <div className="proto-diagram-pin proto-diagram-pin--model-a" aria-hidden="true">
             {variant.id === "A" && (
-              <VariantADesaturate
-                activeStep={activeStep}
-                canvasRef={canvasRef}
-              />
+              <VariantADesaturate activeStep={activeStep} canvasRef={canvasRef} />
             )}
             {variant.id === "B" && (
-              <VariantBZoom
-                activeStep={activeStep}
-                canvasRef={canvasRef}
-              />
+              <VariantBZoom activeStep={activeStep} canvasRef={canvasRef} />
             )}
             {variant.id === "C" && (
-              <VariantCHalo
-                activeStep={activeStep}
-                canvasRef={canvasRef}
-              />
-            )}
-            {variant.id === "C1" && (
-              <VariantC1SoftHalo
-                activeStep={activeStep}
-                canvasRef={canvasRef}
-              />
+              <VariantCHalo activeStep={activeStep} canvasRef={canvasRef} />
             )}
             {variant.id === "C2" && (
-              <VariantC2HaloPlusDim
-                activeStep={activeStep}
-                canvasRef={canvasRef}
-              />
+              <VariantC2HaloPlusDim activeStep={activeStep} canvasRef={canvasRef} />
             )}
             {variant.id === "C3" && (
-              <VariantC3InlineSvg
-                activeStep={activeStep}
-              />
+              <VariantC3InlineSvg activeStep={activeStep} />
             )}
 
-            {/* Step label under diagram */}
             <p className="proto-step-label" aria-hidden="true">
               {activeStep === 0 || activeStep === SH_STEPS.length - 1 ? (
-                "Overview — scroll down to walk through each step"
+                "Overview — scroll to walk through each step"
               ) : (
                 <>
                   <span>{currentStep.title.split("—")[0]}</span>
@@ -1334,7 +1296,7 @@ function VariantSection({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ScrollProto — raíz del prototipo
+// ScrollProto — root
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function ScrollProto(): React.ReactElement {
@@ -1344,16 +1306,16 @@ export function ScrollProto(): React.ReactElement {
 
   return (
     <div className="proto-root" data-testid="scroll-proto">
-      {/* ── Header sticky con tabs de variante ── */}
+      {/* Sticky header with variant tabs */}
       <header className="proto-header" role="banner">
         <span className="proto-header__label" aria-hidden="true">
           Proto — Scrollytelling Highlights
         </span>
 
-        <nav aria-label="Variantes de resalte" role="navigation">
+        <nav aria-label="Highlight variants" role="navigation">
           <ul
             role="tablist"
-            aria-label="Variantes"
+            aria-label="Highlight variants"
             className="proto-tabs"
           >
             {VARIANTS.map((v) => (
@@ -1378,7 +1340,7 @@ export function ScrollProto(): React.ReactElement {
         </span>
       </header>
 
-      {/* ── Variant sections ── */}
+      {/* Variant panels */}
       {VARIANTS.map((v) => (
         <div
           key={v.id}
