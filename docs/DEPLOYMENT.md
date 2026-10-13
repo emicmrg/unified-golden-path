@@ -450,6 +450,25 @@ Outputs: `IdentityPoolId`, `GuestRoleArn`, `AwsRegion`, `IotEndpoint`, `Telemetr
 Amplify Hosting is configured for **manual deployment** (no repo connection), so the SPA is
 uploaded as a zip. The build-time config comes straight from the stack outputs.
 
+> **§4.5 — SPA rewrite rule (react-router-dom v6)**
+>
+> The dashboard uses `BrowserRouter` with clean routes (`/` and `/dashboard`).
+> Amplify must redirect all non-asset paths to `index.html` so that a direct
+> browser navigation or page-refresh on `/dashboard` does not return a 403.
+>
+> Add (or verify) the following rewrite rule in the Amplify console under
+> **App settings → Rewrites and redirects** before or after the first deploy:
+>
+> | Source | Target | Type |
+> |---|---|---|
+> | `</^[^.]+$\|\.(?!(css\|gif\|ico\|jpg\|js\|png\|txt\|svg\|woff\|woff2\|ttf\|map\|json)$)([^.]+$)/>` | `/index.html` | 200 (Rewrite) |
+>
+> Without this rule, a hard-refresh on `/dashboard` returns HTTP 403.
+> The SPA JS handles routing client-side once `index.html` loads.
+>
+> This rule is **not** in the CDK stack (`DashboardStack`) — it must be set
+> manually once in the Amplify console (it persists across deploys).
+
 ```bash
 APP_ID=$(aws cloudformation describe-stacks --stack-name DashboardStack \
   --query "Stacks[0].Outputs[?OutputKey=='AmplifyAppId'].OutputValue" --output text)
