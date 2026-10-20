@@ -43,10 +43,12 @@ aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table
 - **Crew image:** verify that the `latest` image is present and recent in ECR. ECS resolves `latest` when the task starts.
 
   ```bash
+  # Quick count (>=1 means image exists):
+  # aws ecr list-images --repository-name ugp-self-healing-crew --query 'length(imageIds)' --output text
   aws ecr describe-images \
     --repository-name ugp-self-healing-crew \
-    --query 'sort_by(imageDetails,&imagePushedAt)[-5:].[imageTags,imageDigest,imagePushedAt]' \
-    --output table
+    --query 'sort_by(imageDetails,&imagePushedAt)[-5:].{tags:imageTags,pushed:imagePushedAt}' \
+    --output json
   ```
 
 - **Fargate wiring:** verify the deployed task and outputs before the talk.
