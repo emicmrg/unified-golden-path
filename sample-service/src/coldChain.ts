@@ -78,7 +78,7 @@ export function validateTemperature(celsius: number): boolean {
     );
   }
   // Safe range: [TEMP_MIN_C, TEMP_MAX_C] — endpoints INCLUSIVE
-  return celsius >= TEMP_MIN_C && celsius <= TEMP_MAX_C;
+  return celsius > TEMP_MIN_C && celsius <= TEMP_MAX_C;
 }
 
 /**
