@@ -62,6 +62,12 @@ aws sts get-caller-identity --query '{Account:Account,Arn:Arn}' --output table
     --output table
   ```
 
+## Edge MQTT cold start and OTA pre-flight
+
+On the ESP32, the first mutual-TLS MQTT connection after a cold start can briefly fail with `select() timeout` or an `esp-tls` error. The client reconnects automatically after approximately 10–30 seconds. This is expected on the modest hardware during the heavy mutual-TLS handshake, not a firmware bug.
+
+Power on the board 1–2 minutes before the demo and show the serial monitor only after telemetry is green and stable. The OTA rehearsal is covered by a separate local pre-flight guide, `demo-ota.sh`, which is intentionally kept outside this repository.
+
 ## Demo flow
 
 ### 1. Start with the deck
