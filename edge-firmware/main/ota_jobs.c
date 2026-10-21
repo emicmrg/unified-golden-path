@@ -374,6 +374,11 @@ static void ota_download_task(void *pvParameter)
         .keep_alive_enable  = true,
         /* Generous timeout for large firmware images over a mobile hotspot. */
         .timeout_ms         = 30000,
+        /* S3 presigned-URL fix: default 512B HTTP buffers are too small for
+         * S3 response headers (~600-900B) and the long presigned GET line.
+         * Without this the download fails with HTTP_CLIENT: Out of buffer. */
+        .buffer_size        = 4096,
+        .buffer_size_tx     = 2048,
     };
 
     esp_https_ota_config_t ota_cfg = {
